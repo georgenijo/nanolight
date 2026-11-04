@@ -557,7 +557,7 @@ pub fn main(init: std.process.Init) !void {
     o.hooks = live.hooks();
     // The first run: the welcome, in the panel.
     if (!shortcut.onboarded(kv)) o.start(live.choice);
-    if (mac) live.tray = try app.newTray(.{ .symbol = "magnifyingglass", .tooltip = "Nanolight" });
+    if (mac) live.tray = try app.newTray(.{ .symbol = s.theme.glyph(), .tooltip = "Nanolight" });
     // The menu bar icon, unless Settings took it away.
     if (kv.get(init.gpa, menu_bar_key) catch null) |v| {
         defer init.gpa.free(v);

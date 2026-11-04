@@ -44,6 +44,41 @@ pub const Theme = enum {
         return .hex(if (dark) pair[0] else pair[1]);
     }
 
+    /// The search bar's glyph, and the menu bar icon's (SF Symbols).
+    pub fn glyph(t: Theme) []const u8 {
+        return switch (t) {
+            .system => "magnifyingglass",
+            .ocean => "sparkle.magnifyingglass",
+            .forest => "leaf.fill",
+            .rose => "heart.fill",
+            .amber => "bolt.fill",
+            .violet => "moon.stars.fill",
+        };
+    }
+
+    /// The panel's corners, and its glass's.
+    pub fn radius(t: Theme) f32 {
+        return switch (t) {
+            // 18, or theme.json's rounding on Linux, as its colors.
+            .system => @import("linux_theme.zig").radius(),
+            .ocean => 24,
+            .forest => 12,
+            .rose => 28,
+            .amber => 8,
+            .violet => 20,
+        };
+    }
+
+    /// What's typed in the search bar, in points.
+    pub fn fieldSize(t: Theme) f32 {
+        return switch (t) {
+            .system, .amber => 21,
+            .ocean, .violet => 22,
+            .forest => 20,
+            .rose => 23,
+        };
+    }
+
     /// The next or previous one, round.
     pub fn step(t: Theme, dir: i8) Theme {
         const n: i8 = all.len;
@@ -111,4 +146,14 @@ test "System keeps the greys; a theme tints them and steps round" {
     try t.expectEqual(Theme.violet, Theme.system.step(-1));
     try t.expectEqual(Theme.system, Theme.violet.step(1));
     try t.expectEqual(Theme.ocean, Theme.system.step(1));
+}
+
+test "System keeps the bar as it was; each theme has its own" {
+    const t = @import("std").testing;
+    try t.expectEqualStrings("magnifyingglass", Theme.system.glyph());
+    try t.expectEqual(@as(f32, 18), Theme.system.radius());
+    try t.expectEqual(@as(f32, 21), Theme.system.fieldSize());
+    for (Theme.all[1..], 0..) |a, i| for (Theme.all[i + 2 ..]) |b| {
+        try t.expect(!@import("std").mem.eql(u8, a.glyph(), b.glyph()));
+    };
 }

@@ -163,7 +163,7 @@ pub const Nanolight = struct {
 
     pub fn panel(s: *Nanolight, c: *ui.Context) void {
         const p = palette(c.theme.dark, s.theme);
-        const shell = ui.div(c).column().w(width).rounded(@import("linux_theme.zig").radius()).border(p.hair).clip();
+        const shell = ui.div(c).column().w(width).rounded(s.theme.radius()).border(p.hair).clip();
         if (s.own_glass) {
             _ = shell.glass(.{ .tint = @import("palette.zig").tint(c.theme.dark, s.theme) })
                 .shadows(&.{ .{ .color = .{ .a = 0.22 }, .blur = 4, .y = 1 }, .{ .color = .{ .a = 0.28 }, .blur = 40, .y = 18 } });
@@ -259,12 +259,13 @@ pub const Nanolight = struct {
     fn header(s: *Nanolight, c: *ui.Context, p: Palette) bool {
         const bar = ui.div(c).row().wFull().h(header_h).px(18).gap(12).itemsCenter();
         defer bar.end();
-        ui.icon(c, "magnifyingglass", .{ .size = 19, .weight = .medium, .color = p.sub, .frame = 22 });
+        // The theme's glyph, in its hue; System's grey lens otherwise.
+        ui.icon(c, s.theme.glyph(), .{ .size = 19, .weight = .medium, .color = s.theme.hue(c.theme.dark) orelse p.sub, .frame = 22 });
         s.rebuild();
         const r = ui.textField(c, &s.query, .{
             .suggestion = s.completion(),
             .bare = true,
-            .size = 21,
+            .size = s.theme.fieldSize(),
             .width = .fill,
             .placeholder = "Search apps, do math, ask Grok…",
             .placeholder_color = p.sub.alpha(0.75),

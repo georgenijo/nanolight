@@ -16,7 +16,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const os = target.result.os.tag;
-    const nanoui = b.dependency("nanoui", .{ .target = target, .optimize = optimize }).module("nanoui");
+    const nanoui_dep = b.dependency("nanoui", .{ .target = target, .optimize = optimize });
+    const nanoui = nanoui_dep.module("nanoui");
     const version = b.option([]const u8, "version", "Nanolight's version, as the app shows it (release builds)") orelse "0.1.0";
     // The version, for `--version` and the updater off the Mac (no bundle there).
     const opts = b.addOptions();
@@ -71,6 +72,10 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "nanoui", .module = nanoui }},
     }) });
     tests.root_module.addOptions("build_options", opts);
+    // nanoui's own icons, drawn off the Mac, as text: a theme's glyph must
+    // be one (as a .zig file it would belong to nanoui's module too).
+    const icons = b.addWriteFiles().addCopyFile(nanoui_dep.path("src/ui/icons.zig"), "icons.txt");
+    tests.root_module.addAnonymousImport("nanoui_icons", .{ .root_source_file = icons });
     tests.root_module.addAnonymousImport("raycast_host", .{ .root_source_file = b.path("raycast/dist/host.js") });
     if (os == .windows) for ([_][]const u8{ "user32", "gdi32", "shell32", "advapi32", "dwmapi", "ole32" }) |lib| tests.root_module.linkSystemLibrary(lib, .{});
     // zig-out/bin/nanolight-tests: the tests, to run on another machine.

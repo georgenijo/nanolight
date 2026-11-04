@@ -44,8 +44,14 @@ pub const Theme = enum {
         return .hex(if (dark) pair[0] else pair[1]);
     }
 
-    /// The search bar's glyph, and the menu bar icon's (SF Symbols).
+    /// The search bar's glyph, and the menu bar icon's: SF Symbols on the
+    /// Mac; off it nanoui draws its own few, the lens among them.
     pub fn glyph(t: Theme) []const u8 {
+        return t.glyphOn(!pc);
+    }
+
+    fn glyphOn(t: Theme, mac: bool) []const u8 {
+        if (!mac) return "magnifyingglass";
         return switch (t) {
             .system => "magnifyingglass",
             .ocean => "sparkle.magnifyingglass",
@@ -154,6 +160,17 @@ test "System keeps the bar as it was; each theme has its own" {
     try t.expectEqual(@as(f32, 18), Theme.system.radius());
     try t.expectEqual(@as(f32, 21), Theme.system.fieldSize());
     for (Theme.all[1..], 0..) |a, i| for (Theme.all[i + 2 ..]) |b| {
-        try t.expect(!@import("std").mem.eql(u8, a.glyph(), b.glyph()));
+        try t.expect(!@import("std").mem.eql(u8, a.glyphOn(true), b.glyphOn(true)));
     };
+}
+
+test "off the Mac a theme names only an icon nanoui can draw" {
+    // nanoui's table (`ui/icons.zig`), embedded as its source.
+    const std = @import("std");
+    const table = @embedFile("nanoui_icons");
+    for (Theme.all) |th| {
+        var buf: [64]u8 = undefined;
+        const entry = try std.fmt.bufPrint(&buf, ".name = \"{s}\"", .{th.glyphOn(false)});
+        try std.testing.expect(std.mem.indexOf(u8, table, entry) != null);
+    }
 }

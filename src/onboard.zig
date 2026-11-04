@@ -291,7 +291,7 @@ pub const Onboard = struct {
             const r = ui.div(c).row().gap(10).itemsCenter();
             defer r.end();
             const tile = ui.div(c).size(26, 22).rounded(6).bg(p.tile).center();
-            ui.icon(c, "magnifyingglass", .{ .size = 12, .weight = .semibold, .color = p.text });
+            ui.icon(c, s.theme.glyph(), .{ .size = 12, .weight = .semibold, .color = p.text });
             tile.end();
             ui.text(c, if (mac) "Settings are on ⌘, and the gear. It also lives in your menu bar." else "Settings are on Ctrl+, and the gear at the bottom of the panel.", .{ .size = 12.5, .color = p.sub });
         }

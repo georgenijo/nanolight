@@ -35,6 +35,8 @@ pub const Kind = enum {
     settings,
     /// A pane of System Settings (`Row.app` its place in settings_panes.zig).
     pane,
+    /// Something copied before (`Row.clip`, its place in the history).
+    clip,
 
     /// The row's kind as its trailing label shows it.
     pub fn label(k: Kind) []const u8 {
@@ -45,6 +47,7 @@ pub const Kind = enum {
             .file => "File",
             .settings => "Nanolight",
             .pane => "System Settings",
+            .clip => "Clipboard",
             .ask_grok, .ask_claude, .search_x, .search_web, .suggest => "Web",
         };
     }
@@ -58,6 +61,7 @@ pub const Kind = enum {
             .file => "Open",
             .settings => "Open Settings",
             .pane => "Open in System Settings",
+            .clip => "Copy",
             .ask_grok => "Ask Grok",
             .ask_claude => "Ask Claude",
             .search_x => "Search X",
@@ -72,6 +76,7 @@ pub const Kind = enum {
             .file => "Files",
             .settings => "Nanolight",
             .pane => "System Settings",
+            .clip => "Clipboard History",
             .search_web, .suggest => "Google",
             .ask_grok, .ask_claude, .search_x => "Ask & Search",
         };
@@ -85,6 +90,8 @@ pub const Row = struct {
     file: u8 = 0,
     /// Which of the completions (`.suggest`).
     web: u8 = 0,
+    /// Which entry of the clipboard's history (`.clip`).
+    clip: u16 = 0,
     /// Which of its name's bytes the query matched.
     match: search.Match = .{ .score = 0 },
 };
@@ -188,6 +195,14 @@ pub const Results = struct {
         r.push(.{ .kind = .search_x });
     }
 
+    /// The clipboard's history in place of everything else ("clip"): the
+    /// entries `found`, newest first. Nothing goes to Google.
+    pub fn clips(r: *Results, found: []const u16) void {
+        r.n = 0;
+        r.suggested = false;
+        for (found[0..@min(found.len, max_rows)]) |i| r.push(.{ .kind = .clip, .clip = i });
+    }
+
     /// "settings" and "preferences", the words people type for this.
     fn isSettings(query: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(query, "settings") or std.ascii.eqlIgnoreCase(query, "preferences")) return true;
@@ -219,7 +234,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_claude => "https://claude.ai/new?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .currency, .app, .file, .settings, .pane => return "",
+        .calc, .currency, .app, .file, .settings, .pane, .clip => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

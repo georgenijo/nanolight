@@ -47,14 +47,11 @@ From the [latest release](https://github.com/justrach/nanolight/releases/latest)
 
 ### Homebrew (Mac)
 
-This repository is the Homebrew tap. The cask installs the signed `.dmg` from [GitHub Releases](https://github.com/justrach/nanolight/releases/latest) and checks its `.sha256`. Nanolight updates itself afterwards; `brew` is only for the first install:
-
 ```sh
-brew tap justrach/nanolight https://github.com/justrach/nanolight.git
-brew install --cask nanolight
+brew tap justrach/nanolight https://github.com/justrach/nanolight && brew install --cask justrach/nanolight/nanolight
 ```
 
-The cask definition is [`Casks/nanolight.rb`](Casks/nanolight.rb). After publishing a release, refresh it with `sh macos/update-cask.sh vX.Y.Z` (reads that release's `.dmg.sha256`) and commit the cask on `main`. No third-party tap is required.
+This repository is the tap; the cask installs the signed `.dmg` from [Releases](https://github.com/justrach/nanolight/releases/latest), and Nanolight updates itself after that. Use the full `justrach/nanolight/nanolight` name: Homebrew 7 only loads a cask from a third-party tap once you name it (or `brew trust` the tap), so a bare `brew install --cask nanolight` is refused. The cask is [`Casks/nanolight.rb`](Casks/nanolight.rb); after a release, `sh macos/update-cask.sh vX.Y.Z` refreshes it.
 
 On first run a short welcome picks the key that opens it and says who else holds it. On the Mac that's ⌘Space, ⌥Space, ⌃Space or ⌥⌘Space (any other, such as ⌥X, can be recorded later in Settings; Spotlight gives up ⌘Space in System Settings → Keyboard → Keyboard Shortcuts → Spotlight); on a PC, Alt Space, Ctrl Alt Space, Ctrl Space or Ctrl Shift Space. Releases update themselves from this repository's releases, restarting into the new version while the panel is away.
 

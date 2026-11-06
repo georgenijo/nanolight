@@ -73,6 +73,8 @@ pub const Live = struct {
     asking_len: usize = 0,
     waiting: u32 = 0,
     files: @import("files_live.zig").State = .{},
+    /// What was copied lately, for "clip" (clipboard_live.zig).
+    clips: @import("clipboard_live.zig").State = .{},
     /// Updates from GitHub's releases (a signed build only), and the menu
     /// bar icon whose menu offers one once it's ready.
     updater: ?*nanoui.Updater = null,
@@ -608,6 +610,8 @@ pub fn main(init: std.process.Init) !void {
     rc.init(&live, init.environ_map);
     defer rc.deinit(&live);
     rc.rescan(&live);
+    @import("clipboard_live.zig").start(&live);
+    defer @import("clipboard_live.zig").deinit(&live);
     // The newest launch is the one that stays; it hears `--toggle` (single.zig).
     if (single.claim(.{ .ctx = &live, .func = Live.command }) > 0) std.log.info("nanolight: asked an older copy to quit", .{});
     panel.setup(app, live.window.?, &s, if (o.active) o.height() else s.height());
@@ -626,7 +630,9 @@ pub fn main(init: std.process.Init) !void {
     // A release build checks its GitHub releases; one run from zig-out
     // can't replace itself, and leaves the item off.
     const updater = nanoui.Updater.start(init, .{
-        .repo = "justrach/nanolight",
+        // This fork's releases: justrach/nanolight's would replace it with
+        // a copy without the clipboard's history.
+        .repo = "georgenijo/nanolight",
         .asset = asset,
         .version = version,
         .name = "Nanolight",

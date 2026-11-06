@@ -28,6 +28,7 @@ test {
     _ = @import("tests_files.zig");
     _ = @import("row_window.zig");
     _ = @import("answers.zig");
+    _ = @import("clipboard.zig");
     _ = @import("tests_panel.zig");
     switch (@import("builtin").os.tag) {
         .macos => {
@@ -656,4 +657,69 @@ test "on a PC the panel's keys are Ctrl's, and Settings says so" {
     try std.testing.expect(t.hasText("This PC"));
     try std.testing.expect(t.hasText("Alt Space"));
     try std.testing.expect(t.hasText("Sync Across Computers"));
+}
+
+test "\"clip\" lists what was copied, finds in it, copies it again, and asks Google nothing" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    try ix.add("Clipy", "/Applications/Clipy.app");
+    const Asked = struct {
+        var n: usize = 0;
+        fn suggest(_: *anyopaque, _: []const u8) void {
+            n += 1;
+        }
+        fn clock() i64 {
+            return 1000;
+        }
+    };
+    var h: @import("clipboard.zig").History = .{ .gpa = gpa };
+    defer h.deinit();
+    _ = h.add("Invoice 2041", 400);
+    _ = h.add("ssh george@opti\n  -p 22", 940);
+    _ = h.add("invoice total: $40", 990);
+    var probe: Probe = .{};
+    var s: view.Nanolight = .{ .index = &ix, .clips = &h, .clock = Asked.clock };
+    defer s.query.deinit();
+    s.host = .{ .ctx = &probe, .open = Probe.open, .hide = Probe.hide, .suggest = Asked.suggest };
+    s.reveal();
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = 480, .dark = true });
+    defer t.deinit();
+    t.settle(1);
+
+    press(&t, &.{.{ .insert = "clip" }});
+    try std.testing.expectEqual(@as(usize, 3), s.res.n);
+    try std.testing.expect(t.hasText("Clipboard History"));
+    // On one line, with when.
+    try std.testing.expect(t.hasText("ssh george@opti -p 22"));
+    try std.testing.expect(t.hasText("Just now"));
+    try std.testing.expect(t.hasText("10 min ago"));
+    // Not the app named like it, nor Google.
+    for (s.res.slice()) |r| try std.testing.expectEqual(results.Kind.clip, r.kind);
+
+    press(&t, &.{.{ .insert = " INVOICE" }});
+    try std.testing.expectEqual(@as(usize, 2), s.res.n);
+    _ = t.shortcut(.{ .key = ui.Shortcut.down });
+    press(&t, &.{.{ .command = .insert_newline }});
+    try std.testing.expectEqualStrings("Invoice 2041", t.clipboard.items);
+    try std.testing.expect(probe.hidden);
+
+    // Copied while the rows show: ⌘2 is still the row it says.
+    _ = h.add("invoice copied just now", 999);
+    try std.testing.expect(t.shortcut(.{ .key = '2', .cmd = true }));
+    try std.testing.expectEqualStrings("Invoice 2041", t.clipboard.items);
+    // The rows again, with it on top.
+    s.clipsChanged();
+    try std.testing.expectEqual(@as(usize, 3), s.res.n);
+
+    press(&t, &.{.{ .insert = "zzz" }});
+    try std.testing.expectEqual(@as(usize, 0), s.res.n);
+    try std.testing.expect(t.hasText("Nothing copied matches"));
+    try std.testing.expectEqual(@as(usize, 0), Asked.n);
+
+    // Without a watcher (not the Mac), it says so.
+    s.clips = null;
+    press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "clip" } });
+    try std.testing.expect(t.hasText("Clipboard history is off"));
 }

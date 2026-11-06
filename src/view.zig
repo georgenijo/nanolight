@@ -15,6 +15,7 @@ const row_window = @import("row_window.zig");
 const suggest = @import("suggest.zig");
 const text = @import("text.zig");
 const settings_view = @import("settings_view.zig");
+const clipboard = @import("clipboard.zig");
 const SettingsHost = @import("settings_host.zig").SettingsHost;
 const Row = results.Row;
 
@@ -137,6 +138,14 @@ pub const Nanolight = struct {
     /// Settings, drawn in the panel in place of the rows.
     settings_ui: settings_view.Settings = .{},
     ext: ?*@import("raycast_view.zig").Ext = null,
+    /// What was copied lately, listed for "clip" (clipboard_live.zig);
+    /// null where nothing watches the clipboard.
+    clips: ?*clipboard.History = null,
+    /// The time, for how long ago each was copied.
+    clock: *const fn () i64 = @import("account.zig").now,
+    /// Each row's text, kept until it is drawn.
+    clip_lines: [results.max_rows][160]u8 = undefined,
+    clip_ago: [results.max_rows][24]u8 = undefined,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -214,6 +223,11 @@ pub const Nanolight = struct {
             } else if (s.res.n > 0) {
                 ui.div(c).wFull().h(1).bg(p.hair).end();
                 s.list(c, p);
+            } else if (clipboard.words(s.query.text())) |w| {
+                ui.div(c).wFull().h(1).bg(p.hair).end();
+                const empty = ui.div(c).wFull().h(list_h).center();
+                defer empty.end();
+                ui.text(c, if (s.clips == null) "Clipboard history is off" else if (w.len > 0) "Nothing copied matches" else "Nothing copied yet", .{ .size = 13, .color = p.sub.alpha(0.8) });
             }
             ui.spacer(c);
             s.footer(c, p);
@@ -320,6 +334,17 @@ pub const Nanolight = struct {
         const h = std.hash.Wyhash.hash(0, q);
         if (h == s.built) return;
         s.built = h;
+        // The clipboard's history stays here: no files, rates or Google.
+        if (clipboard.words(q) != null) {
+            s.found.deinit();
+            s.web.n = 0;
+            s.fx = null;
+            s.fx_pending = false;
+            s.fx_failed = false;
+            s.fill();
+            s.sel = 0;
+            return;
+        }
         files_view.rebuild(s);
         const was = s.web;
         s.web.n = 0;
@@ -351,6 +376,12 @@ pub const Nanolight = struct {
 
     pub fn fill(s: *Nanolight) void {
         s.list_gen +%= 1;
+        if (clipboard.words(s.query.text())) |w| {
+            var found: [results.max_rows]u32 = undefined;
+            const n = if (s.clips) |h| h.find(w, &found) else 0;
+            s.res.clips(found[0..n]);
+            return;
+        }
         var sug: [results.max_apps]u32 = undefined;
         const ns = s.index.suggestions(&sug);
         var web: [suggest.max_rows][]const u8 = undefined;
@@ -368,6 +399,20 @@ pub const Nanolight = struct {
                 s.res.hex = "Rates unavailable";
             }
         }
+    }
+
+    /// Something was copied while "clip" is typed: the rows again, the
+    /// selection on the entry it was on.
+    pub fn clipsChanged(s: *Nanolight) void {
+        if (clipboard.words(s.query.text()) == null) return;
+        const was: ?u32 = if (s.sel < s.res.n and s.res.rows[s.sel].kind == .clip) s.res.rows[s.sel].clip else null;
+        s.fill();
+        s.sel = 0;
+        const id = was orelse return;
+        for (s.res.slice(), 0..) |r, i| if (r.clip == id) {
+            s.sel = i;
+            return;
+        };
     }
 
     pub const answered = answers.answered;
@@ -452,6 +497,10 @@ pub const Nanolight = struct {
                 ui.text(c, "System Settings", .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
             .file => files_view.row(s, c, p, i, r),
+            .clip => if (s.clips) |h| if (h.get(r.clip)) |e| {
+                ui.text(c, clipboard.oneLine(&s.clip_lines[i], e.text), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82), .truncate = .ellipsis });
+                ui.text(c, clipboard.ago(&s.clip_ago[i], e.at, s.clock()), .{ .size = 12, .color = p.sub.alpha(0.8) });
+            },
             .settings => {
                 ui.text(c, "Nanolight Settings", .{ .size = 13.5, .weight = .medium, .color = p.text });
                 ui.text(c, "Shortcut, sync, updates", .{ .size = 12, .color = p.sub.alpha(0.8) });
@@ -478,7 +527,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .app or r.kind == .file or r.kind == .settings or r.kind == .pane) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .clip) "Copy" else if (r.kind == .app or r.kind == .file or r.kind == .settings or r.kind == .pane) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -514,6 +563,7 @@ pub const Nanolight = struct {
             .search_web => "globe",
             .suggest => "magnifyingglass",
             .settings => "gearshape",
+            .clip => "doc.on.clipboard",
             else => "app.dashed",
         }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
     }
@@ -601,6 +651,15 @@ pub const Nanolight = struct {
             .search_web => s.search(s.query.text(), !s.searches_out),
             .settings => s.openSettings(),
             .pane => s.go(@import("settings_panes.zig").urls[r.app]),
+            .clip => {
+                // Copied again, so it comes back to the top as the watcher sees it.
+                const h = s.clips orelse return;
+                // The entry this row shows, wherever it is now; gone, nothing.
+                const e = h.get(r.clip) orelse return;
+                c.clipboard.write(c.clipboard.ctx, e.text);
+                s.copied_at = c.time;
+                if (s.host) |host| host.hide(host.ctx);
+            },
             .suggest => {
                 // Its words fill the field, as a search box's would.
                 s.query.set(s.web.get(r.web));

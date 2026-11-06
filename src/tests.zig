@@ -34,6 +34,7 @@ test {
             _ = @import("single_mac.zig");
             _ = @import("clickthrough.zig");
             _ = @import("panel_mac.zig");
+            _ = @import("ime_level.zig");
             _ = @import("hotkey_mac.zig");
             _ = @import("recorder.zig");
         },

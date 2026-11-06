@@ -32,7 +32,11 @@ pub fn setup(app: *nanoui.App, w: *nanoui.Window, s: *view.Nanolight, h: f32) vo
     s.window_fades = true;
     objc.msg(void, w.nswindow, "setHasShadow:", .{objc.NO});
     glass = backdrop(w, s.theme.radius(), h);
-    if (w.surface) |surface| surface.after_frame = afterFrame;
+    if (w.surface) |surface| {
+        surface.after_frame = afterFrame;
+        // Pinyin's candidates over the panel, not behind it (#39).
+        _ = @import("ime_level.zig").answerWindowLevel(surface.nsview);
+    }
 }
 
 /// The glass's corners to the theme's, as the panel's follow it.

@@ -377,7 +377,7 @@ pub const Nanolight = struct {
     pub fn fill(s: *Nanolight) void {
         s.list_gen +%= 1;
         if (clipboard.words(s.query.text())) |w| {
-            var found: [results.max_rows]u16 = undefined;
+            var found: [results.max_rows]u32 = undefined;
             const n = if (s.clips) |h| h.find(w, &found) else 0;
             s.res.clips(found[0..n]);
             return;
@@ -399,6 +399,20 @@ pub const Nanolight = struct {
                 s.res.hex = "Rates unavailable";
             }
         }
+    }
+
+    /// Something was copied while "clip" is typed: the rows again, the
+    /// selection on the entry it was on.
+    pub fn clipsChanged(s: *Nanolight) void {
+        if (clipboard.words(s.query.text()) == null) return;
+        const was: ?u32 = if (s.sel < s.res.n and s.res.rows[s.sel].kind == .clip) s.res.rows[s.sel].clip else null;
+        s.fill();
+        s.sel = 0;
+        const id = was orelse return;
+        for (s.res.slice(), 0..) |r, i| if (r.clip == id) {
+            s.sel = i;
+            return;
+        };
     }
 
     pub const answered = answers.answered;
@@ -483,8 +497,7 @@ pub const Nanolight = struct {
                 ui.text(c, "System Settings", .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
             .file => files_view.row(s, c, p, i, r),
-            .clip => if (s.clips) |h| {
-                const e = h.entries.items[r.clip];
+            .clip => if (s.clips) |h| if (h.get(r.clip)) |e| {
                 ui.text(c, clipboard.oneLine(&s.clip_lines[i], e.text), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82), .truncate = .ellipsis });
                 ui.text(c, clipboard.ago(&s.clip_ago[i], e.at, s.clock()), .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
@@ -641,7 +654,9 @@ pub const Nanolight = struct {
             .clip => {
                 // Copied again, so it comes back to the top as the watcher sees it.
                 const h = s.clips orelse return;
-                c.clipboard.write(c.clipboard.ctx, h.entries.items[r.clip].text);
+                // The entry this row shows, wherever it is now; gone, nothing.
+                const e = h.get(r.clip) orelse return;
+                c.clipboard.write(c.clipboard.ctx, e.text);
                 s.copied_at = c.time;
                 if (s.host) |host| host.hide(host.ctx);
             },

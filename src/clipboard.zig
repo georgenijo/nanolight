@@ -13,12 +13,16 @@ pub const Entry = struct {
     text: []u8,
     /// When it was copied, in seconds since 1970.
     at: i64,
+    /// Its own for as long as it is kept: rows hold this, not its place,
+    /// which moves as more is copied.
+    id: u32,
 };
 
 pub const History = struct {
     gpa: std.mem.Allocator,
     /// Newest first.
     entries: std.ArrayList(Entry) = .empty,
+    next_id: u32 = 1,
 
     pub fn deinit(h: *History) void {
         for (h.entries.items) |e| h.gpa.free(e.text);
@@ -35,30 +39,37 @@ pub const History = struct {
         for (h.entries.items, 0..) |e, i| if (std.mem.eql(u8, e.text, text)) {
             if (i == 0) return false;
             const moved = h.entries.orderedRemove(i);
-            h.entries.insert(h.gpa, 0, .{ .text = moved.text, .at = at }) catch {
+            h.entries.insert(h.gpa, 0, .{ .text = moved.text, .at = at, .id = moved.id }) catch {
                 h.gpa.free(moved.text);
                 return true;
             };
             return true;
         };
         const copy = h.gpa.dupe(u8, text) catch return false;
-        h.entries.insert(h.gpa, 0, .{ .text = copy, .at = at }) catch {
+        h.entries.insert(h.gpa, 0, .{ .text = copy, .at = at, .id = h.next_id }) catch {
             h.gpa.free(copy);
             return false;
         };
+        h.next_id +%= 1;
         while (h.entries.items.len > max_entries) h.gpa.free(h.entries.pop().?.text);
         return true;
     }
 
-    /// The entries that hold `query` (any case), newest first, into `out`;
-    /// with no words, the latest. Returns how many.
-    pub fn find(h: *const History, query: []const u8, out: []u16) usize {
+    /// The entry with this `id`, if it is still kept.
+    pub fn get(h: *const History, id: u32) ?Entry {
+        for (h.entries.items) |e| if (e.id == id) return e;
+        return null;
+    }
+
+    /// The ids of the entries that hold `query` (any case), newest first,
+    /// into `out`; with no words, the latest. Returns how many.
+    pub fn find(h: *const History, query: []const u8, out: []u32) usize {
         const q = std.mem.trim(u8, query, " ");
         var n: usize = 0;
         for (h.entries.items, 0..) |e, i| {
             if (n == out.len) break;
             if (q.len == 0 or holds(e.text, q)) {
-                out[n] = @intCast(i);
+                out[n] = h.entries.items[i].id;
                 n += 1;
             }
         }
@@ -95,8 +106,9 @@ pub const History = struct {
             var head = std.mem.splitScalar(u8, rest[0..nl], ' ');
             const at = std.fmt.parseInt(i64, head.next() orelse return, 10) catch return;
             const len = std.fmt.parseInt(usize, head.next() orelse return, 10) catch return;
+            if (len > max_len) return;
             rest = rest[nl + 1 ..];
-            if (rest.len < len + 1 or rest[len] != '\n') return;
+            if (len >= rest.len or rest[len] != '\n') return;
             _ = h.add(rest[0..len], at);
             rest = rest[len + 1 ..];
         }
@@ -142,7 +154,7 @@ pub fn oneLine(buf: []u8, text: []const u8) []const u8 {
 /// How long ago `at` was, as a row says it: "Just now", "5 min ago",
 /// "3 h ago", "2 d ago".
 pub fn ago(buf: []u8, at: i64, now: i64) []const u8 {
-    const s = @max(0, now - at);
+    const s = @max(0, now -| at);
     if (s < 60) return "Just now";
     if (s < 3600) return std.fmt.bufPrint(buf, "{d} min ago", .{@divTrunc(s, 60)}) catch "";
     if (s < 86400) return std.fmt.bufPrint(buf, "{d} h ago", .{@divTrunc(s, 3600)}) catch "";
@@ -180,13 +192,16 @@ test "it finds words in any case, newest first, and lists the latest for none" {
     _ = h.add("Invoice 2041", 1);
     _ = h.add("ssh george@opti", 2);
     _ = h.add("invoice total: $40", 3);
-    var out: [8]u16 = undefined;
+    var out: [8]u32 = undefined;
     const n = h.find(" INVOICE ", &out);
     try t.expectEqual(@as(usize, 2), n);
-    try t.expectEqualStrings("invoice total: $40", h.entries.items[out[0]].text);
-    try t.expectEqualStrings("Invoice 2041", h.entries.items[out[1]].text);
-    try t.expectEqual(@as(usize, 3), h.find("", &out));
-    var two: [2]u16 = undefined;
+    try t.expectEqualStrings("invoice total: $40", h.get(out[0]).?.text);
+    try t.expectEqualStrings("Invoice 2041", h.get(out[1]).?.text);
+    // Copying more moves places, not ids.
+    _ = h.add("new", 4);
+    try t.expectEqualStrings("Invoice 2041", h.get(out[1]).?.text);
+    try t.expectEqual(@as(usize, 4), h.find("", &out));
+    var two: [2]u32 = undefined;
     try t.expectEqual(@as(usize, 2), h.find("", &two));
 }
 
@@ -211,6 +226,16 @@ test "the file reads back as it was written, even with newlines in an entry" {
     defer cut.deinit();
     cut.decode(w.buffered()[0 .. w.buffered().len - 3]);
     try t.expectEqual(@as(usize, 1), cut.entries.items.len);
+    // Nonsense lengths and times are refused or harmless.
+    var bad: History = .{ .gpa = t.allocator };
+    defer bad.deinit();
+    bad.decode("1 18446744073709551615\nxx\n");
+    bad.decode("1 5\nabc");
+    bad.decode("1 3\nabc");
+    try t.expectEqual(@as(usize, 0), bad.entries.items.len);
+    bad.decode("-9223372036854775808 2\nok\n");
+    var ab: [24]u8 = undefined;
+    _ = ago(&ab, bad.entries.items[0].at, std.math.maxInt(i64));
 }
 
 test "\"clip\" asks for the history; other words don't" {

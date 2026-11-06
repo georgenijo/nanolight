@@ -705,6 +705,14 @@ test "\"clip\" lists what was copied, finds in it, copies it again, and asks Goo
     try std.testing.expectEqualStrings("Invoice 2041", t.clipboard.items);
     try std.testing.expect(probe.hidden);
 
+    // Copied while the rows show: ⌘2 is still the row it says.
+    _ = h.add("invoice copied just now", 999);
+    try std.testing.expect(t.shortcut(.{ .key = '2', .cmd = true }));
+    try std.testing.expectEqualStrings("Invoice 2041", t.clipboard.items);
+    // The rows again, with it on top.
+    s.clipsChanged();
+    try std.testing.expectEqual(@as(usize, 3), s.res.n);
+
     press(&t, &.{.{ .insert = "zzz" }});
     try std.testing.expectEqual(@as(usize, 0), s.res.n);
     try std.testing.expect(t.hasText("Nothing copied matches"));

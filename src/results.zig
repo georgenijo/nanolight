@@ -90,8 +90,8 @@ pub const Row = struct {
     file: u8 = 0,
     /// Which of the completions (`.suggest`).
     web: u8 = 0,
-    /// Which entry of the clipboard's history (`.clip`).
-    clip: u16 = 0,
+    /// Which entry of the clipboard's history (`.clip`), by its id.
+    clip: u32 = 0,
     /// Which of its name's bytes the query matched.
     match: search.Match = .{ .score = 0 },
 };
@@ -197,7 +197,7 @@ pub const Results = struct {
 
     /// The clipboard's history in place of everything else ("clip"): the
     /// entries `found`, newest first. Nothing goes to Google.
-    pub fn clips(r: *Results, found: []const u16) void {
+    pub fn clips(r: *Results, found: []const u32) void {
         r.n = 0;
         r.suggested = false;
         for (found[0..@min(found.len, max_rows)]) |i| r.push(.{ .kind = .clip, .clip = i });

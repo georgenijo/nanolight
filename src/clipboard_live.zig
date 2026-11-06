@@ -59,13 +59,14 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
     if (concealed()) return;
     const text = (nanoui.clipboard.readText(l.app.gpa) catch null) orelse return;
     defer l.app.gpa.free(text);
+    // Copied over while it was read: the marks looked at may not be this
+    // text's. The next tick looks at the new one.
+    if (nanoui.clipboard.changeCount() != now or concealed()) return;
     if (!h.add(text, @import("account.zig").now())) return;
     save(l);
     // Listed now: the rows again, with it.
-    if (clipboard.words(l.s.query.text()) != null) {
-        l.s.built = 1;
-        if (l.window) |w| w.redraw();
-    }
+    l.s.clipsChanged();
+    if (l.window) |w| w.redraw();
 }
 
 /// The history to its file, readable by this user alone, whole or not at
@@ -91,7 +92,8 @@ fn concealed() bool {
     const pool = objc.Pool.push();
     defer pool.pop();
     const pb = objc.msg(objc.Object, objc.class("NSPasteboard"), "generalPasteboard", .{});
-    const types = objc.msg(?objc.Object, pb, "types", .{}) orelse return false;
+    // No types to look at: not kept.
+    const types = objc.msg(?objc.Object, pb, "types", .{}) orelse return true;
     const marks = [_][]const u8{
         "org.nspasteboard.ConcealedType",
         "org.nspasteboard.TransientType",

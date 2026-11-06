@@ -94,7 +94,7 @@ pub const Live = struct {
     fn host(l: *Live) view.Host {
         const bind = @import("settings_bind.zig");
         bind.box.ctx = l;
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .files = if (mac) @import("files_live.zig").askFiles else null, .preview = if (mac) showPage else null, .settings = &bind.box };
+        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .rates = askRates, .files = if (mac) @import("files_live.zig").askFiles else null, .preview = if (mac) showPage else null, .settings = &bind.box };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -222,6 +222,22 @@ pub const Live = struct {
             .timeout = 4,
         }, a, Ask.done);
     }
+    /// Currency is asked once typing pauses, as Google's completions are.
+    fn askRates(ctx: *anyopaque, amount: f64, from: []const u8, to: []const u8) void {
+        const l: *Live = @ptrCast(@alignCast(ctx));
+        if (from.len != 3 or to.len != 3) return;
+        const job = l.app.gpa.create(AskRates) catch return l.s.ratesFailed(amount, from, to);
+        job.* = .{ .live = l, .amount = amount };
+        @memcpy(job.from[0..3], from[0..3]);
+        @memcpy(job.to[0..3], to[0..3]);
+        nanoui.App.after(@import("currency.zig").pause_ms, job, struct {
+            fn f(c: ?*anyopaque) callconv(.c) void {
+                const pending: *AskRates = @ptrCast(@alignCast(c.?));
+                pending.send();
+            }
+        }.f);
+    }
+
 
     /// A search's page in the panel, or (null) not.
     fn showPage(ctx: *anyopaque, url: ?[]const u8) void {
@@ -474,6 +490,50 @@ const Ask = struct {
         var list: suggest.List = .{};
         if (r.status != 200 or !suggest.decode(arena.allocator(), r.body, a.text[0..a.len], &list)) return l.s.unanswered(a.text[0..a.len]);
         l.s.answered(a.text[0..a.len], &list);
+    }
+};
+
+/// A currency conversion on its way: amount and the two codes.
+const AskRates = struct {
+    live: *Live,
+    amount: f64,
+    from: [3]u8 = undefined,
+    to: [3]u8 = undefined,
+
+    fn send(a: *AskRates) void {
+        const l = a.live;
+        const currency = @import("currency.zig");
+        const q = currency.parse(l.s.query.text()) orelse {
+            l.app.gpa.destroy(a);
+            return;
+        };
+        if (q.amount != a.amount or !std.mem.eql(u8, q.fromSlice(), a.from[0..3]) or !std.mem.eql(u8, q.toSlice(), a.to[0..3])) {
+            l.app.gpa.destroy(a);
+            return;
+        }
+        var buf: [256]u8 = undefined;
+        const u = currency.url(&buf, a.amount, a.from[0..3], a.to[0..3]);
+        if (u.len == 0) {
+            l.app.gpa.destroy(a);
+            return l.s.ratesFailed(a.amount, a.from[0..3], a.to[0..3]);
+        }
+        nanoui.http.fetch(l.app.gpa, .{
+            .url = u,
+            .headers = &.{.{ .name = "Accept", .value = "application/json" }},
+            .timeout = 6,
+        }, a, AskRates.done);
+    }
+
+    fn done(a: *AskRates, r: nanoui.http.Response) void {
+        const l = a.live;
+        defer l.app.gpa.destroy(a);
+        defer if (l.window) |w| w.redraw();
+        const currency = @import("currency.zig");
+        var ans: currency.Answer = .{};
+        if (r.status != 200 or !currency.decode(r.body, .{ .amount = a.amount, .from = a.from, .to = a.to }, &ans)) {
+            return l.s.ratesFailed(a.amount, a.from[0..3], a.to[0..3]);
+        }
+        l.s.ratesAnswered(a.amount, a.from[0..3], a.to[0..3], ans);
     }
 };
 

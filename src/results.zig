@@ -9,6 +9,7 @@ const std = @import("std");
 const search = @import("search.zig");
 const files = @import("files.zig");
 const calc = @import("calc.zig");
+const currency = @import("currency.zig");
 const panes = @import("settings_panes.zig");
 const mac = @import("builtin").os.tag == .macos;
 const Index = @import("apps.zig").Index;
@@ -20,6 +21,8 @@ pub const machine = if (mac) "Mac" else "PC";
 
 pub const Kind = enum {
     calc,
+    /// A currency conversion (`Row` carries none; `Results.answer` holds it).
+    currency,
     app,
     file,
     ask_grok,
@@ -37,6 +40,7 @@ pub const Kind = enum {
     pub fn label(k: Kind) []const u8 {
         return switch (k) {
             .calc => "Calculator",
+            .currency => "Currency",
             .app => "Application",
             .file => "File",
             .settings => "Nanolight",
@@ -49,6 +53,7 @@ pub const Kind = enum {
     pub fn action(k: Kind) []const u8 {
         return switch (k) {
             .calc => "Copy Answer",
+            .currency => "Copy Amount",
             .app => "Open Application",
             .file => "Open",
             .settings => "Open Settings",
@@ -62,7 +67,7 @@ pub const Kind = enum {
 
     fn section(k: Kind, suggested: bool) []const u8 {
         return switch (k) {
-            .calc => "Calculator",
+            .calc, .currency => "Calculator",
             .app => if (suggested) "Suggestions" else "Applications",
             .file => "Files",
             .settings => "Nanolight",
@@ -130,12 +135,15 @@ pub const Results = struct {
             else
                 "";
             r.push(.{ .kind = .calc });
+        } else if (currency.parse(query)) |_| {
+            // Answer / note filled by the caller from a live rate (or a status).
+            r.push(.{ .kind = .currency });
         }
         var ranked: [max_apps]search.Ranked = undefined;
         const n = search.rankApps(query, ix, boost, &ranked);
         const settings = isSettings(query);
-        // Math keeps its answer and the matching apps, without handoffs.
-        if (r.n > 0 and r.rows[0].kind == .calc) {
+        // Math and currency keep their answer and matching apps, without handoffs.
+        if (r.n > 0 and (r.rows[0].kind == .calc or r.rows[0].kind == .currency)) {
             for (ranked[0..n]) |x| r.push(.{ .kind = .app, .app = x.index, .match = x.match });
             return;
         }
@@ -211,7 +219,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_claude => "https://claude.ai/new?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .app, .file, .settings, .pane => return "",
+        .calc, .currency, .app, .file, .settings, .pane => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";
@@ -255,6 +263,21 @@ test "Claude's row is listed only when it's on, and gives its row back when not"
     try t.expectEqual(Kind.ask_claude, on.rows[on.n - 2].kind);
     // With this few apps Google keeps all four either way.
     try t.expectEqual(off.n + 1, on.n);
+}
+
+test "currency is listed like math, without inventing a rate" {
+    const t = std.testing;
+    var ix = try testIndex(t.allocator, &.{"Safari"});
+    defer ix.deinit();
+    var r: Results = .{};
+    r.build("100 USD to EUR", &ix, &.{}, &.{}, &.{});
+    try t.expectEqual(Kind.currency, r.rows[0].kind);
+    try t.expectEqual(@as(usize, 1), r.n); // no apps match "100 USD to EUR"
+    r.build("2^10 * 3", &ix, &.{}, &.{}, &.{});
+    try t.expectEqual(Kind.calc, r.rows[0].kind);
+    // Math wins over a currency-shaped string that also evaluates (none today).
+    r.build("safari", &ix, &.{}, &.{}, &.{});
+    try t.expect(r.rows[0].kind != .currency);
 }
 
 test "math first, then apps; ask and search only without an answer" {

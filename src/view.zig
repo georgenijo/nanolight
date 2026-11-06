@@ -28,6 +28,8 @@ pub const Host = struct {
     resize: ?*const fn (ctx: *anyopaque, h: f32) void = null,
     /// Request completions, returned through `Nanolight.answered`.
     suggest: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
+    /// Request a currency conversion, returned through `Nanolight.ratesAnswered`.
+    rates: ?*const fn (ctx: *anyopaque, amount: f64, from: []const u8, to: []const u8) void = null,
     files: ?*const fn (ctx: *anyopaque, query: []const u8) void = null,
     /// Shows a search's page in the panel, over `webArea`; null takes it
     /// away. Without it, searches open in the browser.
@@ -122,6 +124,11 @@ pub const Nanolight = struct {
     suggest_on: bool = true,
     web: suggest.List = .{},
     cache: suggest.Cache = .{},
+    /// Currency: last answer, cache, and whether a fetch is out / failed.
+    fx: ?@import("currency.zig").Answer = null,
+    fx_cache: @import("currency.zig").Cache = .{},
+    fx_pending: bool = false,
+    fx_failed: bool = false,
     /// A search's page is in the panel, for the query as it was then.
     previewing: bool = false,
     preview_q: u64 = 0,
@@ -316,7 +323,21 @@ pub const Nanolight = struct {
         files_view.rebuild(s);
         const was = s.web;
         s.web.n = 0;
-        if (s.host) |host| if (host.suggest) |ask| if (s.suggest_on and suggest.eligible(q) and @import("calc.zig").eval(q) == null) {
+        const currency = @import("currency.zig");
+        s.fx = null;
+        s.fx_pending = false;
+        s.fx_failed = false;
+        if (currency.parse(q)) |fxq| {
+            if (s.fx_cache.get(fxq)) |a| {
+                s.fx = a;
+            } else if (s.host) |host| {
+                if (host.rates) |ask| {
+                    s.fx_pending = true;
+                    ask(host.ctx, fxq.amount, fxq.fromSlice(), fxq.toSlice());
+                } else s.fx_failed = true;
+            } else s.fx_failed = true;
+        }
+        if (s.host) |host| if (host.suggest) |ask| if (s.suggest_on and suggest.eligible(q) and @import("calc.zig").eval(q) == null and @import("currency.zig").parse(q) == null) {
             if (!s.cache.lookup(q, &s.web)) {
                 answers.hold(&s.web, &was, q);
                 ask(host.ctx, q);
@@ -335,11 +356,44 @@ pub const Nanolight = struct {
         var web: [suggest.max_rows][]const u8 = undefined;
         s.res.claude = s.claude_on;
         s.res.build(s.query.text(), s.index, sug[0..ns], s.web.slices(&web), &s.found);
+        if (s.res.n > 0 and s.res.rows[0].kind == .currency) {
+            if (s.fx) |a| {
+                s.res.answer = @import("currency.zig").format(&s.res.answer_buf, a.value, true);
+                s.res.hex = @import("currency.zig").note(&s.res.hex_buf, a);
+            } else if (s.fx_pending) {
+                s.res.answer = "…";
+                s.res.hex = "Fetching rates";
+            } else {
+                s.res.answer = "—";
+                s.res.hex = "Rates unavailable";
+            }
+        }
     }
 
     pub const answered = answers.answered;
     pub const unanswered = answers.unanswered;
     pub const filesAnswered = files_view.filesAnswered;
+
+    /// A rate for `amount from→to` landed: keep it and redraw if still typed.
+    pub fn ratesAnswered(s: *Nanolight, amount: f64, from: []const u8, to: []const u8, a: @import("currency.zig").Answer) void {
+        s.fx_cache.put(a);
+        const q = @import("currency.zig").parse(s.query.text()) orelse return;
+        if (q.amount != amount or !std.mem.eql(u8, q.fromSlice(), from) or !std.mem.eql(u8, q.toSlice(), to)) return;
+        s.fx = a;
+        s.fx_pending = false;
+        s.fx_failed = false;
+        s.fill();
+    }
+
+    /// The rate ask failed or was empty: keep an honest empty answer.
+    pub fn ratesFailed(s: *Nanolight, amount: f64, from: []const u8, to: []const u8) void {
+        const q = @import("currency.zig").parse(s.query.text()) orelse return;
+        if (q.amount != amount or !std.mem.eql(u8, q.fromSlice(), from) or !std.mem.eql(u8, q.toSlice(), to)) return;
+        s.fx = null;
+        s.fx_pending = false;
+        s.fx_failed = true;
+        s.fill();
+    }
 
     fn list(s: *Nanolight, c: *ui.Context, p: Palette) void {
         const box = ui.div(c).column().wFull().h(list_h).p(list_pad);
@@ -347,7 +401,7 @@ pub const Nanolight = struct {
         const rows = s.res.slice();
         var heights: [results.max_rows]f32 = undefined;
         for (rows, 0..) |r, i| {
-            const rh: f32 = if (r.kind == .calc) calc_h else row_h;
+            const rh: f32 = if (r.kind == .calc or r.kind == .currency) calc_h else row_h;
             const head: f32 = if (s.res.section(i) != null) section_h else 0;
             heights[i] = rh + head;
         }
@@ -374,7 +428,7 @@ pub const Nanolight = struct {
     }
 
     fn row(s: *Nanolight, c: *ui.Context, p: Palette, i: usize, r: Row) void {
-        const big = r.kind == .calc;
+        const big = r.kind == .calc or r.kind == .currency;
         const d = ui.div(c).row().wFull().h(if (big) calc_h else row_h).px(10).gap(12).itemsCenter().control();
         defer d.end();
         if (i == s.sel) _ = d.rounded(10).bg(p.sel).border(p.rim);
@@ -382,11 +436,11 @@ pub const Nanolight = struct {
             s.sel = i;
             s.activate(c);
         }
-        if (big) return s.calcCard(c, p);
+        if (r.kind == .calc or r.kind == .currency) return s.calcCard(c, p);
         s.tile(c, p, r);
         const q = s.query.text();
         switch (r.kind) {
-            .calc => unreachable,
+            .calc, .currency => unreachable,
             .app => {
                 const a = s.index.apps.items[r.app];
                 ui.richText(c, a.name, s.highlight(i, r, p), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82) });
@@ -444,7 +498,7 @@ pub const Nanolight = struct {
             return;
         };
         if (r.kind == .file) return files_view.tile(s, c, p, r);
-        const big = r.kind == .calc;
+        const big = r.kind == .calc or r.kind == .currency;
         const side: f32 = if (big) 34 else 26;
         const box = ui.div(c).size(side, side).rounded(if (big) 9 else 7).bg(p.tile).center();
         defer box.end();
@@ -454,6 +508,7 @@ pub const Nanolight = struct {
         }
         ui.icon(c, switch (r.kind) {
             .calc => "plus.forwardslash.minus",
+            .currency => "plus.forwardslash.minus",
             .ask_grok => "sparkles",
             .ask_claude => "sun.max",
             .search_web => "globe",
@@ -527,6 +582,13 @@ pub const Nanolight = struct {
                 var buf: [64]u8 = undefined;
                 const v = @import("calc.zig").eval(s.query.text()) orelse return;
                 c.clipboard.write(c.clipboard.ctx, @import("calc.zig").format(&buf, v, false));
+                s.copied_at = c.time;
+                return;
+            },
+            .currency => {
+                const a = s.fx orelse return;
+                var buf: [64]u8 = undefined;
+                c.clipboard.write(c.clipboard.ctx, @import("currency.zig").format(&buf, a.value, false));
                 s.copied_at = c.time;
                 return;
             },

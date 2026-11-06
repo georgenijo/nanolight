@@ -116,7 +116,7 @@ const Run = struct {
             try expect(n.rect.y >= top and b <= fold);
         };
         // The selected row says what Return does (the math's card doesn't).
-        if (!r.looked and s.res.n > 0 and s.res.rows[s.sel].kind != .calc)
+        if (!r.looked and s.res.n > 0 and s.res.rows[s.sel].kind != .calc and s.res.rows[s.sel].kind != .currency)
             try expect(r.t.hasText("Open") or r.t.hasText("Go"));
     }
 };

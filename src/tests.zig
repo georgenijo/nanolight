@@ -9,6 +9,7 @@ const view = @import("view.zig");
 test {
     _ = @import("search.zig");
     _ = @import("calc.zig");
+    _ = @import("currency.zig");
     _ = @import("results.zig");
     _ = @import("suggest.zig");
     _ = @import("promo_camera.zig");
@@ -534,6 +535,66 @@ test "settings opens from ⌘,, from typing, and from the gear" {
     try std.testing.expect(s.height() <= view.max_height);
 }
 
+
+test "currency conversion shows ECB rates and copies the amount" {
+    const gpa = std.testing.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    ix.starters = &mac_starters;
+    try ix.add("Safari", "/Applications/Safari.app");
+    var probe: Probe = .{};
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = .{ .ctx = &probe, .open = Probe.open, .hide = Probe.hide };
+    s.reveal();
+    var t: ui.Tester = undefined;
+    try t.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = 480, .dark = true });
+    defer t.deinit();
+
+    // A known answer, as Frankfurter would return: no network in the test.
+    const currency = @import("currency.zig");
+    const q = currency.parse("100 USD to EUR").?;
+    var ans: currency.Answer = .{
+        .value = 89.09,
+        .amount = q.amount,
+        .from = q.from,
+        .to = q.to,
+        .date_len = 10,
+    };
+    @memcpy(ans.date[0..10], "2026-11-05");
+    s.fx_cache.put(ans);
+
+    press(&t, &.{.{ .insert = "100 USD to EUR" }});
+    try std.testing.expectEqual(results.Kind.currency, s.res.rows[0].kind);
+    try std.testing.expect(t.hasText("89.09"));
+    try std.testing.expect(t.containsText("ECB") and t.containsText("2026-11-05"));
+    press(&t, &.{.{ .command = .insert_newline }});
+    try std.testing.expectEqualStrings("89.09", t.clipboard.items);
+
+    // Offline / failed: honest empty, never a fabricated rate.
+    s.fx_cache = .{};
+    s.fx = null;
+    s.fx_failed = true;
+    s.fx_pending = false;
+    press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "50 SGD to JPY" }});
+    // No host.rates → failed path
+    try std.testing.expectEqual(results.Kind.currency, s.res.rows[0].kind);
+    try std.testing.expect(t.containsText("Rates unavailable"));
+    try std.testing.expect(!t.hasText("89.09"));
+
+    if (std.c.getenv("NANOLIGHT_FX_SHOT")) |path| {
+        // Restore a real answer for the shot.
+        s.fx_cache.put(ans);
+        press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "100 USD to EUR" }});
+        try t.screenshot(std.mem.span(path));
+    }
+    if (std.c.getenv("NANOLIGHT_THEME_SHOT")) |path| {
+        s.theme = .ocean;
+        press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "saf" }});
+        try t.screenshot(std.mem.span(path));
+    }
+}
+
 test "the panel never outgrows its window, which is never resized" {
     const gpa = std.testing.allocator;
     var ix: Index = .init(gpa);
@@ -546,7 +607,7 @@ test "the panel never outgrows its window, which is never resized" {
     var s: view.Nanolight = .{ .index = &ix };
     defer s.query.deinit();
     var tallest: f32 = 0;
-    for ([_][]const u8{ "", "a", "s", "ma", "2^10 * 3", "1+a", "liquid glass" }) |q| {
+    for ([_][]const u8{ "", "a", "s", "ma", "2^10 * 3", "100 USD to EUR", "1+a", "liquid glass" }) |q| {
         s.query.set(q);
         s.rebuild();
         tallest = @max(tallest, s.height());

@@ -1,8 +1,8 @@
 //! The panel's look on Linux, read once, the first time it is asked for.
 //!
 //! `$XDG_CONFIG_HOME/nanolight/theme.json` (or `~/.config/...`), if there,
-//! sets the colors (while the theme in Settings is System), the corner
-//! radius and the font. Anything can write it;
+//! sets the colors and the corner radius (while the theme in Settings is
+//! System) and the font. Anything can write it;
 //! Omarchy's sync writes its theme, Hyprland's rounding and its font. A
 //! change shows the next time Nanolight starts. Without the file the panel
 //! is dark when the desktop says so: nanoui only looks at `$GTK_THEME`,

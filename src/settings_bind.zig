@@ -55,6 +55,9 @@ fn theme(ctx: *anyopaque, t: Theme) void {
     const live = l(ctx);
     live.s.theme = t;
     live.kv.set(theme_key, @tagName(t)) catch {};
+    // The glass's corners and the menu bar icon follow the theme too.
+    (if (@import("builtin").os.tag == .macos) @import("panel_mac.zig") else @import("panel_pc.zig")).corners(t.radius());
+    if (live.tray) |tray| tray.setSymbol(t.glyph());
     if (live.window) |w| w.redraw();
 }
 

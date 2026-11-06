@@ -89,6 +89,9 @@ pub fn resize(w: *nanoui.Window, h: f32, _: anytype) void {
     w.setSize(view.width, height);
 }
 
+/// The panel draws its own corners here: nothing under it to round.
+pub fn corners(_: f32) void {}
+
 /// After `show`: on X11 the window manager is given the hot key's time, or
 /// it may refuse the panel the focus (focus stealing prevention).
 pub fn shown(w: *nanoui.Window) void {

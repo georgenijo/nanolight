@@ -14,6 +14,7 @@ Apps, math, Google, Grok, X and Raycast extensions: one keystroke away. Native Z
 - **System Settings panes** (Mac): "login items", "wifi" or "dark mode" lists the pane, under the apps, and Return opens System Settings right at it.
 - **Completes inline**: the rest of the top app's name, or of Google's top suggestion, is drawn faintly after the caret. Tab or → takes it; Return never does.
 - **Does math**: `2^10 * 3` answers 3,072 (and `0xC00`). Return copies it.
+- **Converts currency**: `100 USD to EUR` (or `100usd in sgd`) uses [Frankfurter](https://www.frankfurter.app)'s ECB daily rates. Return copies the amount. Offline or a failed fetch shows that the rates are away — never a made-up number.
 - **Google suggestions**: up to four, under the apps, the words you add in bold. Nothing that reads as an address (a dot, a slash, an @) is sent.
 - **Results in the panel**: Return on a search shows Google's page in the panel itself. Esc goes back to the list, ⌘↩ opens it in your browser, ⌘[ goes back a page. Prefer the browser? Turn on **Open Searches in Browser** in Settings: Return opens your browser, and ⌘↩ shows the page in the panel.
 - **Ask Grok, search X**, a row away. **Ask Claude** too, once it's turned on in Settings.
@@ -44,6 +45,17 @@ From the [latest release](https://github.com/justrach/nanolight/releases/latest)
 - **Linux**: `nanolight-linux-x86_64.tar.gz` (or `aarch64`). Unpack it and run `nanolight`. It needs GTK 3 (or 4) and an X11 session for its key; on Wayland, bind `nanolight --toggle` to a key in your desktop's keyboard settings.
   The panel is dark when gsettings or `$GTK_THEME` says the desktop is. A `~/.config/nanolight/theme.json` can set its colors, corner radius and font instead (`dark`, `background`, `foreground`, `muted`, `accent`, `selection` as `#rrggbb`, `rounding`, `font`); Nanolight reads it when it starts, and uses it while the theme in Settings is System. [`src/linux_theme.zig`](src/linux_theme.zig) has an example.
 
+### Homebrew (Mac, community)
+
+A community cask installs the same signed `.dmg` from GitHub Releases and checks its `.sha256`. Nanolight updates itself afterwards; `brew` is only for the first install:
+
+```sh
+brew tap gamedevCloudy/tools
+brew install --cask nanolight
+```
+
+The tap and cask live at [gamedevCloudy/homebrew-tools](https://github.com/gamedevCloudy/homebrew-tools) (`Casks/nanolight.rb`). That project is not maintained in this repository. An official Homebrew Cask submission is a separate decision once Homebrew's own cask rules (stars, notarization, repo age) are met; this README does not promise one.
+
 On first run a short welcome picks the key that opens it and says who else holds it. On the Mac that's ⌘Space, ⌥Space, ⌃Space or ⌥⌘Space (any other, such as ⌥X, can be recorded later in Settings; Spotlight gives up ⌘Space in System Settings → Keyboard → Keyboard Shortcuts → Spotlight); on a PC, Alt Space, Ctrl Alt Space, Ctrl Space or Ctrl Shift Space. Releases update themselves from this repository's releases, restarting into the new version while the panel is away.
 
 ## Build
@@ -71,6 +83,7 @@ cd raycast && npm test              # the Raycast extensions' host
 | `src/results.zig` | What a query lists, in order |
 | `src/search.zig` | Fuzzy matching and ranking, allocation-free |
 | `src/calc.zig` | The calculator |
+| `src/currency.zig` | Currency: parse `100 USD to EUR`, Frankfurter/ECB rates |
 | `src/suggest.zig` | Google's completions: the privacy guard, decoding, the cache (after [browse](https://github.com/justrach/browse)) |
 | `src/preview.zig` | The results page in the panel (WKWebView, the Mac) |
 | `src/panel_mac.zig`, `src/panel_pc.zig` | The panel's window on the Mac, and on Windows and Linux |

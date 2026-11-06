@@ -31,8 +31,15 @@ pub fn setup(app: *nanoui.App, w: *nanoui.Window, s: *view.Nanolight, h: f32) vo
     s.margin = view.shadow_margin;
     s.window_fades = true;
     objc.msg(void, w.nswindow, "setHasShadow:", .{objc.NO});
-    glass = backdrop(w, 18, h);
+    glass = backdrop(w, s.theme.radius(), h);
     if (w.surface) |surface| surface.after_frame = afterFrame;
+}
+
+/// The glass's corners to the theme's, as the panel's follow it.
+pub fn corners(radius: f32) void {
+    const g = glass orelse return;
+    const layer = objc.msg(?objc.Object, g, "layer", .{}) orelse return;
+    objc.msg(void, layer, "setCornerRadius:", .{@as(f64, radius)});
 }
 
 /// A fifth of the way down the main screen, centered.

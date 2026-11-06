@@ -45,16 +45,16 @@ From the [latest release](https://github.com/justrach/nanolight/releases/latest)
 - **Linux**: `nanolight-linux-x86_64.tar.gz` (or `aarch64`). Unpack it and run `nanolight`. It needs GTK 3 (or 4) and an X11 session for its key; on Wayland, bind `nanolight --toggle` to a key in your desktop's keyboard settings.
   The panel is dark when gsettings or `$GTK_THEME` says the desktop is. A `~/.config/nanolight/theme.json` can set its colors, corner radius and font instead (`dark`, `background`, `foreground`, `muted`, `accent`, `selection` as `#rrggbb`, `rounding`, `font`); Nanolight reads it when it starts, and uses it while the theme in Settings is System. [`src/linux_theme.zig`](src/linux_theme.zig) has an example.
 
-### Homebrew (Mac, community)
+### Homebrew (Mac)
 
-A community cask installs the same signed `.dmg` from GitHub Releases and checks its `.sha256`. Nanolight updates itself afterwards; `brew` is only for the first install:
+This repository is the Homebrew tap. The cask installs the signed `.dmg` from [GitHub Releases](https://github.com/justrach/nanolight/releases/latest) and checks its `.sha256`. Nanolight updates itself afterwards; `brew` is only for the first install:
 
 ```sh
-brew tap gamedevCloudy/tools
+brew tap justrach/nanolight https://github.com/justrach/nanolight.git
 brew install --cask nanolight
 ```
 
-The tap and cask live at [gamedevCloudy/homebrew-tools](https://github.com/gamedevCloudy/homebrew-tools) (`Casks/nanolight.rb`). That project is not maintained in this repository. An official Homebrew Cask submission is a separate decision once Homebrew's own cask rules (stars, notarization, repo age) are met; this README does not promise one.
+The cask definition is [`Casks/nanolight.rb`](Casks/nanolight.rb). After publishing a release, refresh it with `sh macos/update-cask.sh vX.Y.Z` (reads that release's `.dmg.sha256`) and commit the cask on `main`. No third-party tap is required.
 
 On first run a short welcome picks the key that opens it and says who else holds it. On the Mac that's ⌘Space, ⌥Space, ⌃Space or ⌥⌘Space (any other, such as ⌥X, can be recorded later in Settings; Spotlight gives up ⌘Space in System Settings → Keyboard → Keyboard Shortcuts → Spotlight); on a PC, Alt Space, Ctrl Alt Space, Ctrl Space or Ctrl Shift Space. Releases update themselves from this repository's releases, restarting into the new version while the panel is away.
 

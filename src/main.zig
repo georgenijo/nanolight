@@ -379,7 +379,11 @@ pub const Live = struct {
         const w = l.window orelse return;
         const showing = w.isVisible() and panel.focused(w);
         l.o.pressed(showing);
-        if (showing) return w.hide();
+        if (showing) {
+            // Put away on purpose: an app starting ahead doesn't bring it back.
+            if (mac) l.people.acted = l.people.warming;
+            return w.hide();
+        }
         // Freed a key in System Settings, quit a launcher: look again.
         if (l.o.active) l.o.refresh();
         panel.place(w);

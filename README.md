@@ -63,7 +63,8 @@ You need Zig 0.17.0 and Xcode or the Command Line Tools.
 ```sh
 zig build test      # search, math, suggestions and the panel, through nanoui's Tester
 zig build run       # build and open it
-zig build app       # zig-out/Nanolight.app, for /Applications
+zig build app       # zig-out/Nanolight.app, for /Applications (this Mac's macOS and CPU only;
+                    # for another Mac add -Dtarget=aarch64-macos.14.0 -Dcpu=apple_m1, as macos/package.sh does)
 VERSION=0.1.0 sh macos/package.sh   # the Mac release: signed app, disk image, update zip, manifest.json
 VERSION=0.1.0 sh pc/package.sh      # Windows' zip and Linux's tarballs, added to manifest.json
 zig build -Dtarget=x86_64-windows-gnu   # any target from any machine

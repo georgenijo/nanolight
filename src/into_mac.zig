@@ -12,6 +12,7 @@ const into = @import("into.zig");
 const contacts = @import("contacts.zig");
 const apps = @import("apps.zig");
 const Live = @import("main.zig").Live;
+const panel = @import("panel_mac.zig");
 
 // ----- Contacts -----
 
@@ -19,6 +20,10 @@ const Live = @import("main.zig").Live;
 const entity_contacts: objc.NSInteger = 0;
 
 pub const State = struct {
+    /// Counts apps started ahead, and the last one acted on or left (the
+    /// panel is then not brought back for it).
+    warming: u32 = 0,
+    acted: u32 = 0,
     book: ?*contacts.Book = null,
     loading: bool = false,
     /// When it was last read (Unix seconds): it is read again on showing,
@@ -40,6 +45,12 @@ pub fn access() into.Access {
 /// At launch, and each time the panel shows: read Contacts again if access
 /// is granted and it has been a while. Never asks.
 pub fn refresh(l: *Live) void {
+    // Whether an app's search row can promise to type.
+    const typing = trusted(false);
+    if (typing != l.s.can_type) {
+        l.s.can_type = typing;
+        l.s.built = 1;
+    }
     const a = access();
     if (a != l.s.contacts_access and a != .granted) l.s.contactsChanged(l.s.book, a);
     if (a != .granted or l.people.loading) return;
@@ -203,21 +214,45 @@ fn openApp(path: []const u8, activate: bool) void {
     const url = objc.msg(objc.Object, objc.class("NSURL"), "fileURLWithPath:", .{objc.nsString(path)});
     const config = objc.msg(objc.Object, objc.class("NSWorkspaceOpenConfiguration"), "configuration", .{});
     objc.msg(void, config, "setActivates:", .{if (activate) objc.YES else objc.NO});
+    // Started ahead: hidden too, so it doesn't take the keys (and with
+    // them the panel, which goes when another app is in front).
+    if (!activate) {
+        objc.msg(void, config, "setHides:", .{objc.YES});
+        objc.msg(void, config, "setAddsToRecentItems:", .{objc.NO});
+    }
     const ws = objc.msg(objc.Object, objc.class("NSWorkspace"), "sharedWorkspace", .{});
     objc.msg(void, ws, "openApplicationAtURL:configuration:completionHandler:", .{ url, config, @as(?*anyopaque, null) });
 }
 
 /// Tab went into an app: start it, unseen, so Return finds it ready.
-pub fn warm(_: *anyopaque, path: []const u8) void {
+pub fn warm(ctx: *anyopaque, path: []const u8) void {
+    const l: *Live = @ptrCast(@alignCast(ctx));
     const pool = objc.Pool.push();
     defer pool.pop();
     if (running(path) != null) return;
     openApp(path, false);
+    // Some apps come forward as they start whatever they are asked: the
+    // panel comes back, still inside the app, as it was.
+    l.people.warming +%= 1;
+    inline for (.{ 250, 700, 1400 }) |delay| nanoui.App.after(delay, l, keepPanel);
+}
+
+fn keepPanel(c: ?*anyopaque) callconv(.c) void {
+    const l: *Live = @ptrCast(@alignCast(c.?));
+    const w = l.window orelse return;
+    // Only while still inside the app with nothing done: Return, Esc or
+    // the hot key since mean the panel is meant to be away.
+    if (l.s.scope == null or l.people.acted == l.people.warming) return;
+    if (w.isVisible() and panel.focused(w)) return;
+    panel.place(w);
+    w.show();
+    panel.shown(w);
 }
 
 /// Return on an app's row.
 pub fn run(ctx: *anyopaque, item: *const into.Item, path: []const u8) void {
     const l: *Live = @ptrCast(@alignCast(ctx));
+    l.people.acted = l.people.warming;
     const pool = objc.Pool.push();
     defer pool.pop();
     switch (item.go) {
@@ -237,8 +272,13 @@ pub fn run(ctx: *anyopaque, item: *const into.Item, path: []const u8) void {
             const text = item.target();
             if (text.len == 0) return;
             // Without Accessibility nothing can be typed for it: the words
-            // go on the clipboard, a ⌘V away, and the system asks once.
-            if (!trusted(true)) return copy(text);
+            // go on the clipboard, a ⌘V away, and the Accessibility pane
+            // opens (macOS may add Nanolight there switched off, unasked).
+            if (!trusted(true)) {
+                copy(text);
+                _ = nanoui.shell.openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+                return;
+            }
             const job = l.app.gpa.create(Job) catch return;
             job.* = .{ .gpa = l.app.gpa, .len = @intCast(@min(text.len, job.text.len)) };
             @memcpy(job.text[0..job.len], text[0..job.len]);

@@ -164,6 +164,11 @@ pub const Nanolight = struct {
     book: ?*const contacts.Book = null,
     contacts_access: into.Access = .unknown,
     placeholder_buf: [96]u8 = undefined,
+    /// Each person row's initials, kept until drawn (text is read at draw time).
+    into_initials: [results.max_rows][8]u8 = undefined,
+    /// Nanolight may type into other apps (Accessibility); off, an app's
+    /// search row says the words are copied instead.
+    can_type: bool = true,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -442,7 +447,7 @@ pub const Nanolight = struct {
     pub fn fill(s: *Nanolight) void {
         s.list_gen +%= 1;
         if (s.scopeOf()) |sc| {
-            into.build(&s.into_list, sc, s.query.text(), s.book, s.contacts_access);
+            into.build(&s.into_list, sc, s.query.text(), s.book, s.contacts_access, s.can_type);
             s.res.intoRows(s.into_list.n, sc.name);
             return;
         }
@@ -622,10 +627,9 @@ pub const Nanolight = struct {
         if (r.kind == .into) {
             const it = &s.into_list.items[r.into];
             if (it.person) {
-                var ib: [8]u8 = undefined;
                 const box = ui.div(c).size(26, 26).roundedFull().bg(p.tile).center();
                 defer box.end();
-                ui.text(c, it.initials(&ib), .{ .size = 11, .weight = .semibold, .color = p.text });
+                ui.text(c, it.initials(&s.into_initials[r.into]), .{ .size = 11, .weight = .semibold, .color = p.text });
                 return;
             }
         }
@@ -857,9 +861,12 @@ pub const Nanolight = struct {
         const m = into.parseInline(s.query.text(), s.index) orelse return;
         if (!s.canEnter(m.app)) return;
         const name = s.index.apps.items[m.app].name;
-        into.build(&s.into_list, .{ .app = m.app, .name = name, .handler = m.handler }, m.rest, s.book, s.contacts_access);
+        into.build(&s.into_list, .{ .app = m.app, .name = name, .handler = m.handler }, m.rest, s.book, s.contacts_access, s.can_type);
         var lead: usize = 0;
-        if (m.sure) for (s.into_list.slice()) |it| {
+        // A browser, Maps or System Settings named by a word of it
+        // ("chrome", "settings") is as sure: its rows are addresses.
+        const sure = m.sure or m.handler == .browser or m.handler == .maps or m.handler == .settings;
+        if (sure) for (s.into_list.slice()) |it| {
             const precise = switch (it.go) {
                 .url, .url_in_app => true,
                 .ask_contacts => m.person,
@@ -883,8 +890,12 @@ pub const Nanolight = struct {
             if (r.kind == .search_web) break i;
         } else s.res.n;
         // Never the first row: with no app listed, Return still searches
-        // Google for what was typed, as it always did.
-        s.res.insertInto(@max(at, @min(1, s.res.n)), 1, name);
+        // Google for what was typed, as it always did, and the row goes
+        // under Google's section, not into it.
+        const after_google = if (at == 0) for (s.res.slice(), 0..) |r, i| {
+            if (r.kind != .search_web and r.kind != .suggest) break i;
+        } else s.res.n else at;
+        s.res.insertInto(after_google, 1, name);
     }
 
     fn runInto(s: *Nanolight, k: u8) void {

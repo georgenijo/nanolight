@@ -815,6 +815,11 @@ test "Tab goes into an app; typing lists what it does; Return does it" {
     tt.settle(1);
     try t.expect(tt.hasText("Shawn Georgie"));
     try t.expect(tt.hasText("mobile · +1 (555) 010-0000"));
+    // A person's tile is their initials, drawn from the panel's own memory
+    // (the Mac Mini drew "?" and crashed when they were on the stack).
+    try t.expect(tt.hasText("SG"));
+    tt.settle(3);
+    try t.expect(tt.hasText("SG"));
     try t.expect(tt.hasText("wn Georgie"));
     try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
     tt.settle(1);
@@ -838,6 +843,14 @@ test "Tab goes into an app; typing lists what it does; Return does it" {
     press(&tt, &.{.{ .insert = "groceries" }});
     try t.expect(tt.hasText("Search Notes for “groceries”"));
     try t.expect(tt.hasText("Search"));
+    // Without Accessibility the row says the words are copied instead.
+    s.can_type = false;
+    s.built = 1;
+    tt.settle(1);
+    try t.expectEqualStrings("Copies it for ⌘V · allow Nanolight in Accessibility to type it", s.into_list.items[0].sub());
+    s.can_type = true;
+    s.built = 1;
+    tt.settle(1);
     press(&tt, &.{.{ .command = .insert_newline }});
     try t.expectEqual(into.Go.search_in_app, probe.go.?);
     try t.expectEqualStrings("groceries", probe.target[0..probe.target_len]);
@@ -884,7 +897,7 @@ test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
     var ix: Index = .init(gpa);
     defer ix.deinit();
     ix.starters = &mac_starters;
-    for ([_][]const u8{ "Messages", "Notes", "Safari", "Mail" }) |n| {
+    for ([_][]const u8{ "Messages", "Notes", "Safari", "Mail", "System Settings" }) |n| {
         var buf: [64]u8 = undefined;
         try ix.add(n, try std.fmt.bufPrint(&buf, "/Applications/{s}.app", .{n}));
     }
@@ -912,6 +925,24 @@ test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
     press(&tt, &.{.{ .command = .insert_newline }});
     try t.expectEqualStrings("imessage://+15550100000", probe.target[0..probe.target_len]);
 
+    // "settings wifi": System Settings' pane, first ("settings" is a word for it).
+    if (@import("builtin").os.tag == .macos) {
+        press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "settings wifi" } });
+        try t.expectEqual(results.Kind.into, s.res.rows[0].kind);
+        try t.expectEqualStrings("System Settings", s.res.section(0).?);
+        try t.expect(tt.hasText("Wi‑Fi") or tt.hasText("Wi-Fi"));
+    }
+    // An app's own search, typed in full, doesn't split Google's section.
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "notes groceries" } });
+    var said: @import("suggest.zig").List = .{};
+    for ([_][]const u8{ "notes groceries list", "notes groceries app" }) |w| said.push(w);
+    s.answered("notes groceries", &said);
+    tt.settle(1);
+    var googles: usize = 0;
+    for (0..s.res.n) |i| if (s.res.section(i)) |h| {
+        if (std.mem.eql(u8, h, "Google")) googles += 1;
+    };
+    try t.expectEqual(@as(usize, 1), googles);
     // Without Contacts, "mail merge" isn't taken for someone to find.
     s.contactsChanged(null, .unknown);
     press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "mail merge" } });

@@ -162,7 +162,9 @@ pub const Scope = struct {
 pub const Book = contacts.Book;
 
 /// Lists what `sc`'s app does with `query_in`.
-pub fn build(l: *List, sc: Scope, query_in: []const u8, book: ?*const Book, access: Access) void {
+/// `can_type`: Accessibility lets Nanolight type into the app's search;
+/// without it the words are copied for ⌘V.
+pub fn build(l: *List, sc: Scope, query_in: []const u8, book: ?*const Book, access: Access, can_type: bool) void {
     l.n = 0;
     const q = std.mem.trim(u8, query_in, " \t\r\n");
     switch (sc.handler) {
@@ -173,9 +175,12 @@ pub fn build(l: *List, sc: Scope, query_in: []const u8, book: ?*const Book, acce
         .generic => {},
     }
     // Every app keeps its own search for what was typed, and itself.
-    if (q.len > 0 and sc.handler != .browser and sc.handler != .settings) if (l.push(.search_in_app, sc.app, "Search")) |it| {
+    if (q.len > 0 and sc.handler != .browser and sc.handler != .settings and sc.handler != .maps) if (l.push(.search_in_app, sc.app, "Search")) |it| {
         it.setTitle("Search {s} for “{s}”", .{ sc.name, q });
-        it.setSub("Types it into {s}'s search", .{sc.name});
+        if (can_type)
+            it.setSub("Types it into {s}'s search", .{sc.name})
+        else
+            it.setSub("Copies it for ⌘V · allow Nanolight in Accessibility to type it", .{});
         it.setTarget("{s}", .{q});
         it.symbol = "magnifyingglass";
     };
@@ -443,7 +448,7 @@ pub const Inline = struct {
 const verbs = [_]struct { []const u8, []const u8 }{
     .{ "text", "Messages" },    .{ "message", "Messages" }, .{ "msg", "Messages" },     .{ "imessage", "Messages" },
     .{ "email", "Mail" },       .{ "mail", "Mail" },        .{ "call", "FaceTime" },    .{ "facetime", "FaceTime" },
-    .{ "directions", "Maps" },  .{ "map", "Maps" },
+    .{ "directions", "Maps" },  .{ "map", "Maps" },        .{ "settings", "System Settings" },
 };
 
 /// The app a query starts with, by a verb for it or its name (whole, or a
@@ -527,7 +532,7 @@ test "Messages finds people and opens their conversation by its address" {
     defer b.deinit();
     var l: List = .{};
     const sc: Scope = .{ .app = 3, .name = "Messages", .handler = .messages };
-    build(&l, sc, "sha", &b, .granted);
+    build(&l, sc, "sha", &b, .granted, true);
     try t.expectEqual(Go.url, l.items[0].go);
     try t.expect(l.items[0].person);
     try t.expectEqualStrings("Shawn Georgie", l.items[0].title());
@@ -538,28 +543,28 @@ test "Messages finds people and opens their conversation by its address" {
     try t.expectEqualStrings("sha", l.items[l.n - 2].target());
     try t.expectEqual(Go.open_app, l.items[l.n - 1].go);
     // "to shawn": the word before the name doesn't count.
-    build(&l, sc, "to Shawn", &b, .granted);
+    build(&l, sc, "to Shawn", &b, .granted, true);
     try t.expectEqualStrings("Shawn Georgie", l.items[0].title());
     // A person, then what to tell them: written, not sent.
-    build(&l, sc, "shawn running late", &b, .granted);
+    build(&l, sc, "shawn running late", &b, .granted, true);
     try t.expectEqual(Go.url, l.items[0].go);
     try t.expectEqualStrings("sms://open?addresses=+15550100000&body=running%20late", l.items[0].target());
-    build(&l, sc, "shawn georgie", &b, .granted);
+    build(&l, sc, "shawn georgie", &b, .granted, true);
     try t.expectEqualStrings("imessage://+15550100000", l.items[0].target());
     // An email-only person is messaged at their email.
-    build(&l, sc, "lavan", &b, .granted);
+    build(&l, sc, "lavan", &b, .granted, true);
     try t.expectEqualStrings("imessage://lavan@example.com", l.items[0].target());
     // A number typed in full.
-    build(&l, sc, "+1 555 010 0002", &b, .granted);
+    build(&l, sc, "+1 555 010 0002", &b, .granted, true);
     try t.expectEqualStrings("imessage://+15550100002", l.items[0].target());
     // Nothing typed: a new message.
-    build(&l, sc, "", &b, .granted);
+    build(&l, sc, "", &b, .granted, true);
     try t.expectEqualStrings("imessage://", l.items[0].target());
     try t.expectEqual(Go.open_app, l.items[l.n - 1].go);
     // No access yet: a row that asks, never a made-up person.
-    build(&l, sc, "sha", null, .unknown);
+    build(&l, sc, "sha", null, .unknown, true);
     try t.expectEqual(Go.ask_contacts, l.items[0].go);
-    build(&l, sc, "sha", null, .denied);
+    build(&l, sc, "sha", null, .denied, true);
     try t.expectEqual(Go.url, l.items[0].go);
     try t.expect(std.mem.startsWith(u8, l.items[0].target(), "x-apple.systempreferences:"));
 }
@@ -569,31 +574,33 @@ test "Mail writes to an email, FaceTime calls, Maps searches" {
     var b = try testBook(t.allocator);
     defer b.deinit();
     var l: List = .{};
-    build(&l, .{ .app = 0, .name = "Mail", .handler = .mail }, "sha", &b, .granted);
+    build(&l, .{ .app = 0, .name = "Mail", .handler = .mail }, "sha", &b, .granted, true);
     try t.expectEqualStrings("mailto:shawn@example.com", l.items[0].target());
-    build(&l, .{ .app = 0, .name = "Mail", .handler = .mail }, "sunny", &b, .granted);
+    build(&l, .{ .app = 0, .name = "Mail", .handler = .mail }, "sunny", &b, .granted, true);
     // Sunny has no email: Mail lists nobody for them.
     try t.expect(!l.items[0].person);
-    build(&l, .{ .app = 0, .name = "Mail", .handler = .mail }, "a@b.co", &b, .granted);
+    build(&l, .{ .app = 0, .name = "Mail", .handler = .mail }, "a@b.co", &b, .granted, true);
     try t.expectEqualStrings("mailto:a@b.co", l.items[0].target());
-    build(&l, .{ .app = 0, .name = "FaceTime", .handler = .facetime }, "shawn", &b, .granted);
+    build(&l, .{ .app = 0, .name = "FaceTime", .handler = .facetime }, "shawn", &b, .granted, true);
     try t.expectEqualStrings("facetime://+15550100000", l.items[0].target());
     try t.expectEqualStrings("facetime-audio://+15550100000", l.items[1].target());
-    build(&l, .{ .app = 0, .name = "Maps", .handler = .maps }, "blue bottle coffee", null, .unknown);
+    build(&l, .{ .app = 0, .name = "Maps", .handler = .maps }, "blue bottle coffee", null, .unknown, true);
     try t.expectEqualStrings("maps://?q=blue+bottle+coffee", l.items[0].target());
     try t.expectEqualStrings("maps://?daddr=blue+bottle+coffee", l.items[1].target());
+    // Maps' own search is the row above, not typed into it twice.
+    for (l.slice()) |it| try t.expect(it.go != .search_in_app);
 }
 
 test "a browser opens addresses and searches in itself; System Settings lists panes" {
     const t = std.testing;
     var l: List = .{};
     const sc: Scope = .{ .app = 0, .name = "Safari", .handler = .browser };
-    build(&l, sc, "apple.com/mac", null, .unknown);
+    build(&l, sc, "apple.com/mac", null, .unknown, true);
     try t.expectEqual(Go.url_in_app, l.items[0].go);
     try t.expectEqualStrings("https://apple.com/mac", l.items[0].target());
-    build(&l, sc, "localhost:3000", null, .unknown);
+    build(&l, sc, "localhost:3000", null, .unknown, true);
     try t.expectEqualStrings("http://localhost:3000", l.items[0].target());
-    build(&l, sc, "liquid glass", null, .unknown);
+    build(&l, sc, "liquid glass", null, .unknown, true);
     try t.expectEqualStrings("https://www.google.com/search?q=liquid+glass", l.items[0].target());
     try t.expectEqual(Go.open_app, l.items[l.n - 1].go);
     try t.expect(!looksAddress("hello world"));
@@ -601,7 +608,7 @@ test "a browser opens addresses and searches in itself; System Settings lists pa
     try t.expect(looksAddress("192.168.1.1"));
     try t.expect(looksAddress("ziglang.org"));
     if (@import("builtin").os.tag == .macos) {
-        build(&l, .{ .app = 0, .name = "System Settings", .handler = .settings }, "login items", null, .unknown);
+        build(&l, .{ .app = 0, .name = "System Settings", .handler = .settings }, "login items", null, .unknown, true);
         try t.expectEqualStrings("Login Items & Extensions", l.items[0].title());
         try t.expect(std.mem.startsWith(u8, l.items[0].target(), panes.url_prefix));
     }
@@ -611,13 +618,13 @@ test "any other app: its own search for what was typed" {
     const t = std.testing;
     var l: List = .{};
     const sc: Scope = .{ .app = 7, .name = "Notes", .handler = .generic };
-    build(&l, sc, "groceries", null, .unknown);
+    build(&l, sc, "groceries", null, .unknown, true);
     try t.expectEqual(@as(usize, 2), l.n);
     try t.expectEqual(Go.search_in_app, l.items[0].go);
     try t.expectEqualStrings("Search Notes for “groceries”", l.items[0].title());
     try t.expectEqualStrings("groceries", l.items[0].target());
     try t.expectEqual(@as(u32, 7), l.items[0].app);
-    build(&l, sc, "  ", null, .unknown);
+    build(&l, sc, "  ", null, .unknown, true);
     try t.expectEqual(@as(usize, 1), l.n);
     try t.expectEqual(Go.open_app, l.items[0].go);
 }
@@ -639,6 +646,7 @@ test "typed in full: an app's name or a verb for it, then the rest" {
     try t.expect(!c.sure);
     try t.expectEqual(Handler.browser, parseInline("google chrome ziglang.org", &ix).?.handler);
     try t.expectEqual(Handler.settings, parseInline("settings wifi", &ix).?.handler);
+    try t.expect(parseInline("settings wifi", &ix).?.sure);
     try t.expect(parseInline("messages", &ix) == null);
     try t.expect(parseInline("liquid glass", &ix) == null);
     try t.expect(parseInline("ab cd", &ix) == null);

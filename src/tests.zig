@@ -29,6 +29,8 @@ test {
     _ = @import("row_window.zig");
     _ = @import("answers.zig");
     _ = @import("clipboard.zig");
+    _ = @import("contacts.zig");
+    _ = @import("into.zig");
     _ = @import("tests_panel.zig");
     switch (@import("builtin").os.tag) {
         .macos => {
@@ -722,4 +724,208 @@ test "\"clip\" lists what was copied, finds in it, copies it again, and asks Goo
     s.clips = null;
     press(&t, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "clip" } });
     try std.testing.expect(t.hasText("Clipboard history is off"));
+}
+
+/// A host that records what an app's row asked for.
+const IntoProbe = struct {
+    probe: Probe = .{},
+    go: ?@import("into.zig").Go = null,
+    target: [1024]u8 = undefined,
+    target_len: usize = 0,
+    app: [256]u8 = undefined,
+    app_len: usize = 0,
+    warmed: usize = 0,
+    asked: usize = 0,
+
+    fn host(p: *IntoProbe) view.Host {
+        return .{ .ctx = p, .open = open, .hide = hide, .into = into, .warm = warm, .contacts = ask };
+    }
+    fn open(ctx: *anyopaque, target: []const u8) void {
+        const p: *IntoProbe = @ptrCast(@alignCast(ctx));
+        Probe.open(&p.probe, target);
+    }
+    fn hide(ctx: *anyopaque) void {
+        const p: *IntoProbe = @ptrCast(@alignCast(ctx));
+        p.probe.hidden = true;
+    }
+    fn into(ctx: *anyopaque, item: *const @import("into.zig").Item, app_path: []const u8) void {
+        const p: *IntoProbe = @ptrCast(@alignCast(ctx));
+        p.go = item.go;
+        @memcpy(p.target[0..item.target().len], item.target());
+        p.target_len = item.target().len;
+        @memcpy(p.app[0..app_path.len], app_path);
+        p.app_len = app_path.len;
+    }
+    fn warm(ctx: *anyopaque, _: []const u8) void {
+        const p: *IntoProbe = @ptrCast(@alignCast(ctx));
+        p.warmed += 1;
+    }
+    fn ask(ctx: *anyopaque) void {
+        const p: *IntoProbe = @ptrCast(@alignCast(ctx));
+        p.asked += 1;
+    }
+};
+
+test "Tab goes into an app; typing lists what it does; Return does it" {
+    const t = std.testing;
+    const gpa = t.allocator;
+    const into = @import("into.zig");
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    ix.starters = &mac_starters;
+    for ([_][]const u8{ "Messages", "Mail", "Notes", "Safari", "System Settings" }) |n| {
+        var buf: [64]u8 = undefined;
+        try ix.add(n, try std.fmt.bufPrint(&buf, "/Applications/{s}.app", .{n}));
+    }
+    var book: @import("contacts.zig").Book = .init(gpa);
+    defer book.deinit();
+    try book.add("Shawn Georgie", &.{.{ .value = "+1 (555) 010-0000", .email = false, .label = "mobile" }});
+    try book.add("Sunny", &.{.{ .value = "+1 555 010 0001", .email = false }});
+    var probe: IntoProbe = .{};
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = probe.host();
+    s.reveal();
+    var tt: ui.Tester = undefined;
+    try tt.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer tt.deinit();
+    tt.settle(1);
+
+    // "mes", Tab: inside Messages, the field empty, the app started.
+    press(&tt, &.{.{ .insert = "mes" }});
+    try t.expectEqual(results.Kind.app, s.res.rows[0].kind);
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    tt.settle(1);
+    try t.expectEqual(ix.find("Messages"), s.scope);
+    try t.expectEqualStrings("", s.query.text());
+    try t.expectEqual(@as(usize, 1), probe.warmed);
+    try t.expect(tt.hasText("Messages"));
+    try t.expect(tt.hasText("New Message"));
+
+    // No Contacts yet: a row asks, and asks only when chosen.
+    press(&tt, &.{.{ .insert = "sha" }});
+    try t.expectEqual(into.Go.ask_contacts, s.into_list.items[0].go);
+    try t.expect(tt.hasText("Find people in Contacts"));
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(@as(usize, 1), probe.asked);
+    try t.expect(!probe.probe.hidden);
+
+    // Access given: Shawn, and Tab completes the name.
+    s.contactsChanged(&book, .granted);
+    tt.settle(1);
+    try t.expect(tt.hasText("Shawn Georgie"));
+    try t.expect(tt.hasText("mobile · +1 (555) 010-0000"));
+    try t.expect(tt.hasText("wn Georgie"));
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    tt.settle(1);
+    try t.expectEqualStrings("Shawn Georgie", s.query.text());
+    // No web, no files, inside an app.
+    for (s.res.slice()) |r| try t.expectEqual(results.Kind.into, r.kind);
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(into.Go.url, probe.go.?);
+    try t.expectEqualStrings("imessage://+15550100000", probe.target[0..probe.target_len]);
+    try t.expectEqualStrings("/Applications/Messages.app", probe.app[0..probe.app_len]);
+    try t.expect(probe.probe.hidden);
+    // Done: out of the app, the field empty.
+    try t.expect(s.scope == null);
+    try t.expectEqualStrings("", s.query.text());
+    try t.expectEqual(@as(u16, 1), ix.launches.items[ix.find("Messages").?]);
+
+    // Any other app: its own search for the words.
+    probe.probe.hidden = false;
+    press(&tt, &.{.{ .insert = "notes" }});
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    press(&tt, &.{.{ .insert = "groceries" }});
+    try t.expect(tt.hasText("Search Notes for “groceries”"));
+    try t.expect(tt.hasText("Search"));
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(into.Go.search_in_app, probe.go.?);
+    try t.expectEqualStrings("groceries", probe.target[0..probe.target_len]);
+
+    // Delete in an empty field comes back out, to the app's name; Esc
+    // clears, then leaves; ⇧Tab leaves at once.
+    press(&tt, &.{.{ .insert = "safari" }});
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    tt.settle(1);
+    try t.expectEqual(ix.find("Safari"), s.scope);
+    press(&tt, &.{.{ .command = .delete_backward }});
+    try t.expect(s.scope == null);
+    try t.expectEqualStrings("Safari", s.query.text());
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    press(&tt, &.{.{ .insert = "zig" }});
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.escape }));
+    tt.settle(1);
+    try t.expectEqualStrings("", s.query.text());
+    try t.expectEqual(ix.find("Safari"), s.scope);
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.escape }));
+    tt.settle(1);
+    try t.expect(s.scope == null);
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }) or true);
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "safari" } });
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    tt.settle(1);
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab, .shift = true }));
+    tt.settle(1);
+    try t.expect(s.scope == null);
+
+    // A browser: an address opens in it.
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "safari" } });
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    press(&tt, &.{.{ .insert = "ziglang.org" }});
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(into.Go.url_in_app, probe.go.?);
+    try t.expectEqualStrings("https://ziglang.org", probe.target[0..probe.target_len]);
+    try t.expectEqualStrings("/Applications/Safari.app", probe.app[0..probe.app_len]);
+}
+
+test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
+    const t = std.testing;
+    const gpa = t.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    ix.starters = &mac_starters;
+    for ([_][]const u8{ "Messages", "Notes", "Safari" }) |n| {
+        var buf: [64]u8 = undefined;
+        try ix.add(n, try std.fmt.bufPrint(&buf, "/Applications/{s}.app", .{n}));
+    }
+    var book: @import("contacts.zig").Book = .init(gpa);
+    defer book.deinit();
+    try book.add("Shawn Georgie", &.{.{ .value = "+1 (555) 010-0000", .email = false }});
+    var probe: IntoProbe = .{};
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = probe.host();
+    s.contactsChanged(&book, .granted);
+    s.reveal();
+    var tt: ui.Tester = undefined;
+    try tt.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer tt.deinit();
+    tt.settle(1);
+    press(&tt, &.{.{ .insert = "messages to Shawn" }});
+    try t.expectEqual(results.Kind.into, s.res.rows[0].kind);
+    try t.expectEqualStrings("Messages", s.res.section(0).?);
+    try t.expect(tt.hasText("Shawn Georgie"));
+    // Google's search for the words is still there, under it.
+    var web = false;
+    for (s.res.slice()) |r| web = web or r.kind == .search_web;
+    try t.expect(web);
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqualStrings("imessage://+15550100000", probe.target[0..probe.target_len]);
+
+    // "notes groceries": Notes' own search, after the apps, before Google.
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "notes groceries" } });
+    var at: ?usize = null;
+    var google: ?usize = null;
+    for (s.res.slice(), 0..) |r, i| {
+        if (r.kind == .into and at == null) at = i;
+        if (r.kind == .search_web and google == null) google = i;
+    }
+    try t.expect(at.? < google.?);
+    try t.expect(tt.hasText("Search Notes for “groceries”"));
+    // Tab on it goes into Notes with the words.
+    s.sel = at.?;
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.tab }));
+    tt.settle(1);
+    try t.expectEqual(ix.find("Notes"), s.scope);
+    try t.expectEqualStrings("groceries", s.query.text());
 }

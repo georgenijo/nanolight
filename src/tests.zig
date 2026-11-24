@@ -884,7 +884,7 @@ test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
     var ix: Index = .init(gpa);
     defer ix.deinit();
     ix.starters = &mac_starters;
-    for ([_][]const u8{ "Messages", "Notes", "Safari" }) |n| {
+    for ([_][]const u8{ "Messages", "Notes", "Safari", "Mail" }) |n| {
         var buf: [64]u8 = undefined;
         try ix.add(n, try std.fmt.bufPrint(&buf, "/Applications/{s}.app", .{n}));
     }
@@ -912,7 +912,17 @@ test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
     press(&tt, &.{.{ .command = .insert_newline }});
     try t.expectEqualStrings("imessage://+15550100000", probe.target[0..probe.target_len]);
 
-    // "notes groceries": Notes' own search, after the apps, before Google.
+    // Without Contacts, "mail merge" isn't taken for someone to find.
+    s.contactsChanged(null, .unknown);
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "mail merge" } });
+    try t.expect(s.res.rows[0].kind != .into);
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "text shawn" } });
+    try t.expectEqual(results.Kind.into, s.res.rows[0].kind);
+    try t.expectEqual(@import("into.zig").Go.ask_contacts, s.into_list.items[0].go);
+    s.contactsChanged(&book, .granted);
+
+    // "notes groceries": no app listed, so Google's search stays first and
+    // Notes' own search is right under it.
     press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "notes groceries" } });
     var at: ?usize = null;
     var google: ?usize = null;
@@ -920,7 +930,8 @@ test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
         if (r.kind == .into and at == null) at = i;
         if (r.kind == .search_web and google == null) google = i;
     }
-    try t.expect(at.? < google.?);
+    try t.expectEqual(@as(usize, 0), google.?);
+    try t.expectEqual(@as(usize, 1), at.?);
     try t.expect(tt.hasText("Search Notes for “groceries”"));
     // Tab on it goes into Notes with the words.
     s.sel = at.?;

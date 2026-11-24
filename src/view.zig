@@ -862,7 +862,7 @@ pub const Nanolight = struct {
         if (m.sure) for (s.into_list.slice()) |it| {
             const precise = switch (it.go) {
                 .url, .url_in_app => true,
-                .ask_contacts => true,
+                .ask_contacts => m.person,
                 .search_in_app, .open_app => false,
             };
             if (!precise or lead == 3) break;
@@ -882,7 +882,9 @@ pub const Nanolight = struct {
         const at = for (s.res.slice(), 0..) |r, i| {
             if (r.kind == .search_web) break i;
         } else s.res.n;
-        s.res.insertInto(at, 1, name);
+        // Never the first row: with no app listed, Return still searches
+        // Google for what was typed, as it always did.
+        s.res.insertInto(@max(at, @min(1, s.res.n)), 1, name);
     }
 
     fn runInto(s: *Nanolight, k: u8) void {

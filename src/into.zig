@@ -434,6 +434,10 @@ pub const Inline = struct {
     /// Said by a verb ("text shawn") or the app's whole name, so its rows
     /// can lead; otherwise they come after the apps.
     sure: bool,
+    /// Plainly about a person: a verb ("text shawn"), or "to"/"with"
+    /// after the name ("messages to shawn"). Only then does asking for
+    /// Contacts lead: "mail merge" is not someone to find.
+    person: bool = false,
 };
 
 const verbs = [_]struct { []const u8, []const u8 }{
@@ -456,11 +460,11 @@ pub fn parseInline(query_in: []const u8, ix: *const Index) ?Inline {
         if (head.len < 3 or rest.len == 0) continue;
         if (ix.find(head)) |a| {
             const h = Handler.of(ix.apps.items[a].name);
-            return .{ .app = a, .handler = h, .rest = rest, .sure = true };
+            return .{ .app = a, .handler = h, .rest = rest, .sure = true, .person = stripLead(rest).len < rest.len };
         }
         for (verbs) |v| if (std.ascii.eqlIgnoreCase(head, v[0])) {
             const a = ix.find(v[1]) orelse break;
-            return .{ .app = a, .handler = Handler.of(v[1]), .rest = rest, .sure = true };
+            return .{ .app = a, .handler = Handler.of(v[1]), .rest = rest, .sure = true, .person = true };
         };
         if (head.len >= 4 and std.mem.indexOfScalar(u8, head, ' ') == null) if (byWord(ix, head)) |a| {
             return .{ .app = a, .handler = Handler.of(ix.apps.items[a].name), .rest = rest, .sure = false };
@@ -625,7 +629,8 @@ test "typed in full: an app's name or a verb for it, then the rest" {
     const m = parseInline("messages to Shawn", &ix).?;
     try t.expectEqual(Handler.messages, m.handler);
     try t.expectEqualStrings("to Shawn", m.rest);
-    try t.expect(m.sure);
+    try t.expect(m.sure and m.person);
+    try t.expect(!parseInline("mail merge", &ix).?.person);
     const v = parseInline("text shawn", &ix).?;
     try t.expectEqual(Handler.messages, v.handler);
     try t.expectEqualStrings("shawn", v.rest);

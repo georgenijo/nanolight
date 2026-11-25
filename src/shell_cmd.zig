@@ -23,10 +23,12 @@ pub fn shell(env_shell: ?[]const u8) []const u8 {
     return "/bin/zsh";
 }
 
-/// The argv that runs `cmd` in `sh_path` as a login shell (its PATH, Homebrew
-/// with it). The runner sends its errors with its output.
-pub fn argv(buf: *[4][]const u8, sh_path: []const u8, cmd: []const u8) []const []const u8 {
-    buf.* = .{ sh_path, "-l", "-c", cmd };
+/// The argv that runs `cmd` in `sh_path` as an interactive login shell, as
+/// a Terminal window's is: ~/.zprofile (Homebrew's PATH) and ~/.zshrc (your
+/// functions and aliases) both read. It has no terminal: stdin is empty.
+/// The runner sends its errors with its output.
+pub fn argv(buf: *[5][]const u8, sh_path: []const u8, cmd: []const u8) []const []const u8 {
+    buf.* = .{ sh_path, "-l", "-i", "-c", cmd };
     return buf;
 }
 
@@ -72,11 +74,13 @@ test "the shell and what it's given" {
     try t.expectEqualStrings("/opt/homebrew/bin/fish", shell("/opt/homebrew/bin/fish"));
     try t.expectEqualStrings("/bin/zsh", shell(null));
     try t.expectEqualStrings("/bin/zsh", shell("zsh"));
-    var b: [4][]const u8 = undefined;
+    var b: [5][]const u8 = undefined;
     const v = argv(&b, "/bin/zsh", "echo $HOME | wc -c");
-    try t.expectEqual(@as(usize, 4), v.len);
+    try t.expectEqual(@as(usize, 5), v.len);
     try t.expectEqualStrings("-l", v[1]);
-    try t.expectEqualStrings("echo $HOME | wc -c", v[3]);
+    // Interactive: ~/.zshrc's functions and aliases are there too.
+    try t.expectEqualStrings("-i", v[2]);
+    try t.expectEqualStrings("echo $HOME | wc -c", v[4]);
     const s = try terminalScript(t.allocator, "/bin/zsh", "brew upgrade");
     defer t.allocator.free(s);
     try t.expect(std.mem.startsWith(u8, s, "#!/bin/zsh -l\n"));

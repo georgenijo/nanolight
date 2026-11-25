@@ -39,6 +39,8 @@ pub const Kind = enum {
     clip,
     /// What an app does with the query, inside it (into.zig; `Row.into`).
     into,
+    /// A command typed after `>` or `cmd ` (shell_cmd.zig), run in the panel.
+    command,
 
     /// The row's kind as its trailing label shows it.
     pub fn label(k: Kind) []const u8 {
@@ -51,6 +53,7 @@ pub const Kind = enum {
             .pane => "System Settings",
             .clip => "Clipboard",
             .into => "Action",
+            .command => "Command",
             .ask_grok, .ask_claude, .search_x, .search_web, .suggest => "Web",
         };
     }
@@ -66,6 +69,7 @@ pub const Kind = enum {
             .pane => "Open in System Settings",
             .clip => "Copy",
             .into => "Go",
+            .command => "Run",
             .ask_grok => "Ask Grok",
             .ask_claude => "Ask Claude",
             .search_x => "Search X",
@@ -82,6 +86,7 @@ pub const Kind = enum {
             .pane => "System Settings",
             .clip => "Clipboard History",
             .into => "",
+            .command => "Shell",
             .search_web, .suggest => "Google",
             .ask_grok, .ask_claude, .search_x => "Ask & Search",
         };
@@ -212,6 +217,13 @@ pub const Results = struct {
         for (found[0..@min(found.len, max_rows)]) |i| r.push(.{ .kind = .clip, .clip = i });
     }
 
+    /// A typed command: its one row.
+    pub fn command(r: *Results) void {
+        r.n = 0;
+        r.suggested = false;
+        r.push(.{ .kind = .command });
+    }
+
     /// "settings" and "preferences", the words people type for this.
     fn isSettings(query: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(query, "settings") or std.ascii.eqlIgnoreCase(query, "preferences")) return true;
@@ -282,7 +294,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_claude => "https://claude.ai/new?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .currency, .app, .file, .settings, .pane, .clip, .into => return "",
+        .calc, .currency, .app, .file, .settings, .pane, .clip, .into, .command => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

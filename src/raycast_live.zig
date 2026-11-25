@@ -7,6 +7,8 @@ const main = @import("main.zig");
 const raycast = @import("raycast.zig");
 const sc = @import("script_commands.zig");
 const apps = @import("apps.zig");
+const shell_cmd = @import("shell_cmd.zig");
+const mac = @import("builtin").os.tag == .macos;
 const Live = main.Live;
 
 pub fn isCommand(target: []const u8) bool {
@@ -21,7 +23,7 @@ pub fn init(l: *Live, env: *const std.process.Environ.Map) void {
     l.runner = .{ .gpa = gpa, .io = l.app.io, .ext = &l.ext_ui, .hooks = hooks(l), .node = raycast.findNode(gpa, env) };
     // The host is written out only where Node can run it.
     if (l.runner.node != null) l.runner.host = raycast.findHost(gpa, env);
-    l.scripts = .{ .gpa = gpa, .io = l.app.io, .ext = &l.ext_ui, .hooks = .{ .ctx = l, .hide = hide, .redraw = redraw, .copy = copy, .footer = footer } };
+    l.scripts = .{ .gpa = gpa, .io = l.app.io, .ext = &l.ext_ui, .hooks = .{ .ctx = l, .hide = hide, .redraw = redraw, .copy = copy, .footer = footer, .terminal = if (mac) terminal else null } };
     l.s.ext = &l.ext_ui;
     l.env = env;
 }
@@ -67,6 +69,47 @@ pub fn start(l: *Live, target: []const u8) void {
     }
     l.scripts.stop();
     l.runner.start(target, title, png);
+}
+
+/// A command typed in the search (`> git status`): run in the panel, in
+/// the login shell, the search kept to come back to.
+pub fn runCommand(ctx: *anyopaque, cmd: []const u8) void {
+    const l = live(ctx);
+    l.runner.stop();
+    l.scripts.runShell(cmd, userShell(l));
+    redraw(l);
+}
+
+fn userShell(l: *Live) []const u8 {
+    const env = l.env orelse return shell_cmd.shell(null);
+    return shell_cmd.shell(env.get("SHELL"));
+}
+
+var terminal_count: u32 = 0;
+
+/// The command in a new Terminal window: a `.command` file that deletes
+/// itself, opened as a double-click would (no Automation permission).
+pub fn terminal(ctx: *anyopaque, cmd: []const u8) void {
+    const l = live(ctx);
+    const gpa = l.app.gpa;
+    const script = shell_cmd.terminalScript(gpa, userShell(l), cmd) catch return;
+    defer gpa.free(script);
+    const tmp = if (l.env) |env| env.get("TMPDIR") orelse "/tmp" else "/tmp";
+    var name_buf: [64]u8 = undefined;
+    // A new name each time (`exclusive` below refuses one that's there).
+    terminal_count +%= 1;
+    const name = std.fmt.bufPrint(&name_buf, "nanolight-{d}-{d}.command", .{ std.c.getpid(), terminal_count }) catch return;
+    const path = std.fs.path.join(gpa, &.{ tmp, name }) catch return;
+    defer gpa.free(path);
+    const io = l.app.io;
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .permissions = .fromMode(0o700), .exclusive = true }) catch return;
+    f.writeStreamingAll(io, script) catch {
+        f.close(io);
+        return;
+    };
+    f.close(io);
+    _ = nanoui.shell.openPath(path);
+    hide(l);
 }
 
 fn hooks(l: *Live) raycast.Hooks {

@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const nanoui = @import("nanoui");
 const sc = @import("script_commands.zig");
+const shell_cmd = @import("shell_cmd.zig");
 const model = @import("raycast_model.zig");
 const Ext = @import("raycast_view.zig").Ext;
 const windows = builtin.os.tag == .windows;
@@ -19,6 +20,8 @@ pub const Hooks = struct {
     copy: *const fn (ctx: *anyopaque, text: []const u8) void,
     /// Said in the search's footer (a silent script's last line).
     footer: *const fn (ctx: *anyopaque, text: []const u8) void,
+    /// Opens a typed command in Terminal (⌘↩ on its screen), where there is one.
+    terminal: ?*const fn (ctx: *anyopaque, cmd: []const u8) void = null,
 };
 
 const max_out = 256 * 1024;
@@ -47,6 +50,9 @@ pub const Runner = struct {
     /// The command's screen is up (not a silent run).
     shown: bool = false,
     footer_buf: [160]u8 = undefined,
+    /// A command typed in the search (`> git status`, shell_cmd.zig), run
+    /// in the login shell rather than a script; in `arena`.
+    shell: ?[]const u8 = null,
 
     pub fn deinit(r: *Runner) void {
         r.stop();
@@ -66,6 +72,7 @@ pub const Runner = struct {
         r.drop();
         r.arena = .init(r.gpa);
         const a = r.arena.?.allocator();
+        r.shell = null;
         r.file = a.dupe(u8, path[sc.prefix.len..]) catch return;
         r.title = a.dupe(u8, title) catch return;
         r.bytes = std.Io.Dir.cwd().readFileAlloc(io(), r.file, a, .limited(1 << 20)) catch "";
@@ -74,6 +81,25 @@ pub const Runner = struct {
         r.ext.start(r.title, icon, .{ .ctx = r, .func = said });
         r.shown = true;
         if (r.meta.argCount() > 0 or r.meta.confirm) return r.ask();
+        r.run();
+    }
+
+    /// Runs a command typed in the search, its output in the panel as it
+    /// prints. `shell_path` is the user's shell ($SHELL).
+    pub fn runShell(r: *Runner, cmd: []const u8, shell_path: []const u8) void {
+        r.stop();
+        r.drop();
+        r.arena = .init(r.gpa);
+        const a = r.arena.?.allocator();
+        r.shell = a.dupe(u8, cmd) catch return;
+        r.file = a.dupe(u8, shell_path) catch return;
+        r.bytes = "";
+        var tb: [120]u8 = undefined;
+        r.title = a.dupe(u8, shell_cmd.oneLine(&tb, cmd)) catch return;
+        r.meta = .{ .title = r.title, .mode = .full_output };
+        for (&r.args) |*x| x.clearRetainingCapacity();
+        r.ext.start(r.title, null, .{ .ctx = r, .func = said });
+        r.shown = true;
         r.run();
     }
 
@@ -113,21 +139,30 @@ pub const Runner = struct {
         r.out.clearRetainingCapacity();
         const a = r.arena.?.allocator();
         var cmd_buf: [8][]const u8 = undefined;
-        const cmd = sc.command(r.bytes, r.file, &cmd_buf);
+        var sh_buf: [4][]const u8 = undefined;
+        const cmd = if (r.shell) |line|
+            (if (windows) blk: {
+                sh_buf[0..3].* = .{ "cmd.exe", "/c", line };
+                break :blk sh_buf[0..3];
+            } else shell_cmd.argv(&sh_buf, r.file, line))
+        else
+            sc.command(r.bytes, r.file, &cmd_buf);
         var argv: std.ArrayList([]const u8) = .empty;
         // Its errors with its output: through sh, where there is one.
         if (!windows) argv.appendSlice(a, &.{ "/bin/sh", "-c", "exec \"$@\" 2>&1", "sh" }) catch return;
         argv.appendSlice(a, cmd) catch return;
-        for (r.meta.args, 0..) |maybe, i| {
+        if (r.shell == null) for (r.meta.args, 0..) |maybe, i| {
             const arg = maybe orelse continue;
             const v = r.args[i].items;
             if (v.len == 0 and !arg.optional) return r.fail("Fill in every argument that isn't optional.");
             var enc: [2048]u8 = undefined;
             argv.append(a, a.dupe(u8, if (arg.percentEncoded) sc.encode(&enc, v) else v) catch return) catch return;
-        }
+        };
         const dir = r.workDir(a);
-        const child = std.process.spawn(r.io, .{ .argv = argv.items, .cwd = .{ .path = dir }, .stdin = .ignore, .stdout = .pipe, .stderr = if (windows) .ignore else .inherit, .create_no_window = windows }) catch
-            return r.fail("The script couldn't be started (is its interpreter installed?).");
+        // Its own process group, so stopping it stops what it started too
+        // (a pipeline, a server).
+        const child = std.process.spawn(r.io, .{ .argv = argv.items, .cwd = .{ .path = dir }, .stdin = .ignore, .stdout = .pipe, .stderr = if (windows) .ignore else .inherit, .create_no_window = windows, .pgid = if (windows) null else 0 }) catch
+            return r.fail(if (r.shell != null) "The shell couldn't be started." else "The script couldn't be started (is its interpreter installed?).");
         r.child = child;
         const out = child.stdout.?;
         r.watch = if (windows)
@@ -143,7 +178,8 @@ pub const Runner = struct {
 
     /// Its directory: `currentDirectoryPath` (with ~), else the script's.
     fn workDir(r: *Runner, a: std.mem.Allocator) []const u8 {
-        const d = r.meta.cwd;
+        // A typed command: from home, as a new Terminal window starts.
+        const d = if (r.shell != null) "~" else r.meta.cwd;
         if (d.len > 0) {
             if (d[0] != '~') return d;
             const home = std.c.getenv(if (windows) "USERPROFILE" else "HOME") orelse return d;
@@ -169,7 +205,10 @@ pub const Runner = struct {
         var arena: std.heap.ArenaAllocator = .init(r.gpa);
         const a = arena.allocator();
         const text = std.mem.trimEnd(u8, r.out.items, " \r\n");
-        const acts = a.dupe(model.Action, &.{ .{ .id = "copy", .title = "Copy Output" }, .{ .id = "again", .title = "Run Again" } }) catch &.{};
+        const acts = if (r.shell != null and r.hooks.terminal != null)
+            a.dupe(model.Action, &.{ .{ .id = "copy", .title = "Copy Output" }, .{ .id = "again", .title = "Run Again" }, .{ .id = "terminal", .title = "Open in Terminal" } }) catch &.{}
+        else
+            a.dupe(model.Action, &.{ .{ .id = "copy", .title = "Copy Output" }, .{ .id = "again", .title = "Run Again" } }) catch &.{};
         var v: model.View = .{ .kind = "detail", .title = r.title, .loading = !done, .actions = if (done) acts else &.{} };
         if (r.meta.mode == .full_output) {
             v.output = a.dupe(u8, if (text.len == 0 and done) "(no output)" else text) catch "";
@@ -199,6 +238,11 @@ pub const Runner = struct {
             if (std.mem.eql(u8, id, "run") or std.mem.eql(u8, id, "again")) {
                 if (std.mem.eql(u8, id, "again") and (r.meta.argCount() > 0 or r.meta.confirm)) return r.ask();
                 r.run();
+            } else if (std.mem.eql(u8, id, "terminal")) {
+                const typed = r.shell orelse return;
+                const t = r.hooks.terminal orelse return;
+                r.stop();
+                t(r.hooks.ctx, typed);
             } else if (std.mem.eql(u8, id, "copy")) {
                 r.hooks.copy(r.hooks.ctx, std.mem.trimEnd(u8, r.out.items, "\n"));
                 r.ext.note("Copied to the clipboard", false);
@@ -216,6 +260,10 @@ pub const Runner = struct {
         if (r.watch) |w| w.cancel();
         r.watch = null;
         if (r.child) |*c| {
+            // The whole group first: what the shell started goes with it.
+            if (!windows) if (c.id) |pid| {
+                _ = std.c.kill(-pid, std.c.SIG.TERM);
+            };
             c.kill(r.io);
         }
         r.child = null;

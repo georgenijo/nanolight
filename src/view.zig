@@ -19,7 +19,10 @@ const clipboard = @import("clipboard.zig");
 const SettingsHost = @import("settings_host.zig").SettingsHost;
 const into = @import("into.zig");
 const contacts = @import("contacts.zig");
+const shell_cmd = @import("shell_cmd.zig");
 const Row = results.Row;
+const history_max = 32;
+const history_len = 512;
 
 /// What the panel asks of whatever shows it (the window, or the film).
 pub const Host = struct {
@@ -46,6 +49,11 @@ pub const Host = struct {
     warm: ?*const fn (ctx: *anyopaque, app_path: []const u8) void = null,
     /// Asks for Contacts access; `Nanolight.contactsChanged` follows.
     contacts: ?*const fn (ctx: *anyopaque) void = null,
+    /// Runs a command typed after `>` or `cmd ` in the panel, its output
+    /// shown there (shell_cmd.zig); null where commands can't run.
+    run: ?*const fn (ctx: *anyopaque, cmd: []const u8) void = null,
+    /// The same command in Terminal (⌘↩).
+    terminal: ?*const fn (ctx: *anyopaque, cmd: []const u8) void = null,
 };
 
 pub const width: f32 = 680;
@@ -169,6 +177,14 @@ pub const Nanolight = struct {
     /// Nanolight may type into other apps (Accessibility); off, an app's
     /// search row says the words are copied instead.
     can_type: bool = true,
+    /// Commands run from the panel, newest last, for ↑ and ↓ (this run of
+    /// the app only: never saved, they can hold anything).
+    history: [history_max][history_len]u8 = undefined,
+    history_lens: [history_max]u16 = @splat(0),
+    history_n: usize = 0,
+    /// Where ↑ has got to (`history_n` when on what's typed).
+    history_at: usize = 0,
+    cmd_title: [160]u8 = undefined,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -251,6 +267,11 @@ pub const Nanolight = struct {
                 const empty = ui.div(c).wFull().h(list_h).center();
                 defer empty.end();
                 ui.text(c, if (s.clips == null) "Clipboard history is off" else if (w.len > 0) "Nothing copied matches" else "Nothing copied yet", .{ .size = 13, .color = p.sub.alpha(0.8) });
+            } else if (shell_cmd.parse(s.query.text()) != null) {
+                ui.div(c).wFull().h(1).bg(p.hair).end();
+                const empty = ui.div(c).wFull().h(list_h).center();
+                defer empty.end();
+                ui.text(c, if (s.host != null and s.host.?.run != null) "Type a command: Return runs it here" else "Commands can't run here", .{ .size = 13, .color = p.sub.alpha(0.8) });
             }
             ui.spacer(c);
             s.footer(c, p);
@@ -309,6 +330,11 @@ pub const Nanolight = struct {
                 break;
             }
         };
+        // A command: ↑ and ↓ go through the ones run before.
+        if (s.scope == null and shell_cmd.parse(s.query.text()) != null and s.history_n > 0) {
+            if (c.shortcut(.{ .key = S.up })) s.recall(-1);
+            if (c.shortcut(.{ .key = S.down })) s.recall(1);
+        }
         const n = s.res.n;
         if (c.shortcut(.{ .key = S.down }) or c.shortcut(.{ .key = 'n', .ctrl = true })) {
             if (n > 0) s.sel = (s.sel + 1) % n;
@@ -404,8 +430,9 @@ pub const Nanolight = struct {
             s.sel = 0;
             return;
         }
-        // The clipboard's history stays here: no files, rates or Google.
-        if (clipboard.words(q) != null) {
+        // The clipboard's history, and a command, stay here: no files,
+        // rates or Google (a command is never sent anywhere).
+        if (clipboard.words(q) != null or shell_cmd.parse(q) != null) {
             s.found.deinit();
             s.web.n = 0;
             s.fx = null;
@@ -449,6 +476,10 @@ pub const Nanolight = struct {
         if (s.scopeOf()) |sc| {
             into.build(&s.into_list, sc, s.query.text(), s.book, s.contacts_access, s.can_type);
             s.res.intoRows(s.into_list.n, sc.name);
+            return;
+        }
+        if (shell_cmd.parse(s.query.text())) |cmd| {
+            if (cmd.len > 0) s.res.command() else s.res.n = 0;
             return;
         }
         if (clipboard.words(s.query.text())) |w| {
@@ -586,6 +617,11 @@ pub const Nanolight = struct {
                 ui.text(c, clipboard.oneLine(&s.clip_lines[i], e.text), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82), .truncate = .ellipsis });
                 ui.text(c, clipboard.ago(&s.clip_ago[i], e.at, s.clock()), .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
+            .command => {
+                const cmd = shell_cmd.parse(q) orelse "";
+                ui.text(c, shell_cmd.oneLine(&s.cmd_title, cmd), .{ .size = 13.5, .weight = .medium, .mono = true, .color = p.text, .truncate = .ellipsis });
+                ui.text(c, if (s.host != null and s.host.?.terminal != null) "Runs in your shell, here · " ++ results.mod ++ "↩ in Terminal" else "Runs in your shell, here", .{ .size = 12, .color = p.sub.alpha(0.8), .truncate = .ellipsis });
+            },
             .settings => {
                 ui.text(c, "Nanolight Settings", .{ .size = 13.5, .weight = .medium, .color = p.text });
                 ui.text(c, "Shortcut, sync, updates", .{ .size = 12, .color = p.sub.alpha(0.8) });
@@ -612,7 +648,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .into) s.into_list.items[r.into].verb else if (r.kind == .clip) "Copy" else if (r.kind == .app or r.kind == .file or r.kind == .settings or r.kind == .pane) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .into) s.into_list.items[r.into].verb else if (r.kind == .clip) "Copy" else if (r.kind == .command) "Run" else if (r.kind == .app or r.kind == .file or r.kind == .settings or r.kind == .pane) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -658,6 +694,7 @@ pub const Nanolight = struct {
             .suggest => "magnifyingglass",
             .settings => "gearshape",
             .clip => "doc.on.clipboard",
+            .command => "terminal",
             .into => s.into_list.items[r.into].symbol,
             else => "app.dashed",
         }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
@@ -744,6 +781,7 @@ pub const Nanolight = struct {
             },
             .file => s.go(s.found.entries[r.file].path()),
             .into => s.runInto(r.into),
+            .command => s.runCommand(false),
             .ask_grok, .ask_claude, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
             .search_web => s.search(s.query.text(), !s.searches_out),
             .settings => s.openSettings(),
@@ -772,6 +810,7 @@ pub const Nanolight = struct {
         switch (r.kind) {
             .search_web => s.search(s.query.text(), s.searches_out),
             .suggest => s.search(s.web.get(r.web), s.searches_out),
+            .command => s.runCommand(true),
             else => s.activate(c),
         }
     }
@@ -786,6 +825,61 @@ pub const Nanolight = struct {
         s.previewing = true;
         s.preview_q = std.hash.Wyhash.hash(0, s.query.text());
         show(h.ctx, u);
+    }
+
+    // ----- commands (shell_cmd.zig) -----
+
+    /// Runs what's typed after `>`: in the panel, or in Terminal. Kept for
+    /// ↑; the field keeps it too, to edit and run again after Esc.
+    fn runCommand(s: *Nanolight, in_terminal: bool) void {
+        const cmd = shell_cmd.parse(s.query.text()) orelse return;
+        if (cmd.len == 0) return;
+        const h = s.host orelse return;
+        const f = (if (in_terminal) h.terminal else h.run) orelse return;
+        s.remember(cmd);
+        f(h.ctx, cmd);
+        if (in_terminal) h.hide(h.ctx);
+    }
+
+    fn remember(s: *Nanolight, cmd: []const u8) void {
+        if (cmd.len > history_len) return;
+        // Again: it moves to the end, once.
+        if (s.history_n > 0) {
+            const last = s.history_n - 1;
+            if (std.mem.eql(u8, s.history[last][0..s.history_lens[last]], cmd)) {
+                s.history_at = s.history_n;
+                return;
+            }
+        }
+        if (s.history_n == history_max) {
+            for (1..history_max) |i| {
+                s.history[i - 1] = s.history[i];
+                s.history_lens[i - 1] = s.history_lens[i];
+            }
+            s.history_n -= 1;
+        }
+        @memcpy(s.history[s.history_n][0..cmd.len], cmd);
+        s.history_lens[s.history_n] = @intCast(cmd.len);
+        s.history_n += 1;
+        s.history_at = s.history_n;
+    }
+
+    /// ↑ (`step` -1) or ↓ (+1) through the commands run before.
+    fn recall(s: *Nanolight, step: i2) void {
+        const at: isize = @as(isize, @intCast(@min(s.history_at, s.history_n))) + step;
+        if (at < 0) return;
+        s.history_at = @intCast(at);
+        var buf: [history_len + 2]u8 = undefined;
+        if (s.history_at >= s.history_n) {
+            s.history_at = s.history_n;
+            s.query.set("> ");
+        } else {
+            const k = s.history_at;
+            const line = std.fmt.bufPrint(&buf, "> {s}", .{s.history[k][0..s.history_lens[k]]}) catch return;
+            s.query.set(line);
+        }
+        const len = s.query.text().len;
+        s.query.want_selection = .{ len, len };
     }
 
     // ----- into an app (into.zig) -----

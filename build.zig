@@ -43,6 +43,10 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkFramework("ServiceManagement", .{});
             // The Codegraff key, kept in the Keychain (src/keychain_mac.zig).
             exe.root_module.linkFramework("Security", .{});
+            // Into an app: people from Contacts, and its search typed
+            // through Accessibility (src/into_mac.zig).
+            exe.root_module.linkFramework("Contacts", .{});
+            exe.root_module.linkFramework("ApplicationServices", .{});
         },
         .windows => {
             // A window app: no console. The hot key, the Start menu's icons,
@@ -136,6 +140,7 @@ pub fn infoPlist(b: *std.Build, version: []const u8) []const u8 {
         \\  <key>NSDownloadsFolderUsageDescription</key><string>File Search lists the files and folders in a folder you type.</string>
         \\  <key>NSRemovableVolumesUsageDescription</key><string>File Search lists the files and folders in a folder you type.</string>
         \\  <key>NSNetworkVolumesUsageDescription</key><string>File Search lists the files and folders in a folder you type.</string>
+        \\  <key>NSContactsUsageDescription</key><string>Inside Messages, Mail or FaceTime, Nanolight finds the person you type. Contacts stay on this Mac and are sent nowhere.</string>
         \\</dict>
         \\</plist>
         \\

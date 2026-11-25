@@ -30,6 +30,7 @@ const Recorder = if (mac) @import("recorder.zig").Recorder else @import("pc_stub
 const account = @import("account.zig");
 const rc = @import("raycast_live.zig");
 const Settings = @import("settings.zig").Settings;
+const into_mac = @import("into_mac.zig");
 const suggest_key = "nanolight.suggest";
 /// "1": Return opens searches in the browser (issue #10).
 const searches_out_key = "nanolight.searches_out";
@@ -92,11 +93,26 @@ pub const Live = struct {
     env: ?*const std.process.Environ.Map = null,
     /// The next `hide` is skipped: a command just took the panel.
     keep_open: bool = false,
+    /// The people in Contacts, for going into Messages, Mail and FaceTime.
+    people: if (mac) into_mac.State else struct {} = .{},
 
     fn host(l: *Live) view.Host {
         const bind = @import("settings_bind.zig");
         bind.box.ctx = l;
-        return .{ .ctx = l, .open = open, .hide = hide, .resize = resize, .suggest = ask, .rates = askRates, .files = if (mac) @import("files_live.zig").askFiles else null, .preview = if (mac) showPage else null, .settings = &bind.box };
+        return .{
+            .ctx = l,
+            .open = open,
+            .hide = hide,
+            .resize = resize,
+            .suggest = ask,
+            .rates = askRates,
+            .files = if (mac) @import("files_live.zig").askFiles else null,
+            .preview = if (mac) showPage else null,
+            .settings = &bind.box,
+            .into = if (mac) into_mac.run else null,
+            .warm = if (mac) into_mac.warm else null,
+            .contacts = if (mac) into_mac.ask else null,
+        };
     }
 
     fn open(ctx: *anyopaque, target: []const u8) void {
@@ -363,11 +379,16 @@ pub const Live = struct {
         const w = l.window orelse return;
         const showing = w.isVisible() and panel.focused(w);
         l.o.pressed(showing);
-        if (showing) return w.hide();
+        if (showing) {
+            // Put away on purpose: an app starting ahead doesn't bring it back.
+            if (mac) l.people.acted = l.people.warming;
+            return w.hide();
+        }
         // Freed a key in System Settings, quit a launcher: look again.
         if (l.o.active) l.o.refresh();
         panel.place(w);
         rc.refresh(l);
+        if (mac) into_mac.refresh(l);
         l.s.reveal();
         w.show();
         panel.shown(w);
@@ -612,6 +633,9 @@ pub fn main(init: std.process.Init) !void {
     rc.rescan(&live);
     @import("clipboard_live.zig").start(&live);
     defer @import("clipboard_live.zig").deinit(&live);
+    // Contacts, if access was given before (it is asked for only from a row).
+    if (mac) into_mac.refresh(&live);
+    defer if (mac) into_mac.deinit(&live);
     // The newest launch is the one that stays; it hears `--toggle` (single.zig).
     if (single.claim(.{ .ctx = &live, .func = Live.command }) > 0) std.log.info("nanolight: asked an older copy to quit", .{});
     panel.setup(app, live.window.?, &s, if (o.active) o.height() else s.height());

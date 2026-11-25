@@ -17,6 +17,8 @@ const text = @import("text.zig");
 const settings_view = @import("settings_view.zig");
 const clipboard = @import("clipboard.zig");
 const SettingsHost = @import("settings_host.zig").SettingsHost;
+const into = @import("into.zig");
+const contacts = @import("contacts.zig");
 const Row = results.Row;
 
 /// What the panel asks of whatever shows it (the window, or the film).
@@ -37,6 +39,13 @@ pub const Host = struct {
     preview: ?*const fn (ctx: *anyopaque, url: ?[]const u8) void = null,
     /// Settings callbacks; without them, changes are not persisted.
     settings: ?*const SettingsHost = null,
+    /// Does an app's action (into.zig): an address, its search, its
+    /// message field. Without it, addresses and apps go to `open`.
+    into: ?*const fn (ctx: *anyopaque, item: *const into.Item, app_path: []const u8) void = null,
+    /// Starts an app in the background: an action in it is a key away.
+    warm: ?*const fn (ctx: *anyopaque, app_path: []const u8) void = null,
+    /// Asks for Contacts access; `Nanolight.contactsChanged` follows.
+    contacts: ?*const fn (ctx: *anyopaque) void = null,
 };
 
 pub const width: f32 = 680;
@@ -146,6 +155,20 @@ pub const Nanolight = struct {
     /// Each row's text, kept until it is drawn.
     clip_lines: [results.max_rows][160]u8 = undefined,
     clip_ago: [results.max_rows][24]u8 = undefined,
+    /// Inside an app (Tab on its row): which, and what it lists for the
+    /// query (into.zig). Typed in full ("messages to shawn"), the list
+    /// holds the rows put among the others.
+    scope: ?u32 = null,
+    into_list: into.List = .{},
+    /// The people in Contacts, once access is granted (into_mac.zig).
+    book: ?*const contacts.Book = null,
+    contacts_access: into.Access = .unknown,
+    placeholder_buf: [96]u8 = undefined,
+    /// Each person row's initials, kept until drawn (text is read at draw time).
+    into_initials: [results.max_rows][8]u8 = undefined,
+    /// Nanolight may type into other apps (Accessibility); off, an app's
+    /// search row says the words are copied instead.
+    can_type: bool = true,
 
     /// Called as it is shown: the query selected, the keys its own.
     pub fn reveal(s: *Nanolight) void {
@@ -257,9 +280,35 @@ pub const Nanolight = struct {
         if (c.shortcut(.{ .key = ',', .cmd = true })) return s.openSettings();
         // ⌘↩: a search in the browser rather than in the panel.
         if (c.shortcut(.{ .key = S.enter, .cmd = true })) s.activateOut(c);
-        // Tab takes the faint completion, as → does.
-        const more = s.completion();
-        if (!files_view.takeOnTab(s, c) and more.len > 0 and c.shortcut(.{ .key = S.tab })) s.take(more);
+        // Tab goes into the selected app; inside one, or on anything else,
+        // it takes the faint completion, as → does. ⇧Tab comes back out.
+        if (!files_view.takeOnTab(s, c)) {
+            if (s.scope != null and c.shortcut(.{ .key = S.tab, .shift = true })) {
+                s.leave(true);
+            } else if (s.intoTarget()) |t| {
+                if (c.shortcut(.{ .key = S.tab })) s.enter(t.app, t.rest);
+            } else {
+                const more = s.completion();
+                if (more.len > 0 and c.shortcut(.{ .key = S.tab })) {
+                    // A person's name as Contacts writes it.
+                    if (s.scope != null) {
+                        const name = s.into_list.items[s.res.rows[0].into].title();
+                        var buf: [160]u8 = undefined;
+                        @memcpy(buf[0..name.len], name);
+                        s.query.set(buf[0..name.len]);
+                        s.query.want_selection = .{ name.len, name.len };
+                    } else s.take(more);
+                }
+            }
+        }
+        // Delete in an empty field inside an app comes back out, to its name.
+        if (s.scope != null and s.query.text().len == 0) for (c.input.ops) |op| {
+            if (op == .command and (op.command == .delete_backward or op.command == .delete_word_backward)) {
+                c.input.ops = &.{};
+                s.leave(true);
+                break;
+            }
+        };
         const n = s.res.n;
         if (c.shortcut(.{ .key = S.down }) or c.shortcut(.{ .key = 'n', .ctrl = true })) {
             if (n > 0) s.sel = (s.sel + 1) % n;
@@ -273,7 +322,7 @@ pub const Nanolight = struct {
             s.activate(c);
         };
         if (c.shortcut(.{ .key = S.escape })) {
-            if (s.query.text().len > 0) s.query.clear() else if (s.host) |h| h.hide(h.ctx);
+            if (s.query.text().len > 0) s.query.clear() else if (s.scope != null) s.leave(false) else if (s.host) |h| h.hide(h.ctx);
         }
     }
 
@@ -283,12 +332,13 @@ pub const Nanolight = struct {
         // The theme's glyph, in its hue; System's grey lens otherwise.
         ui.icon(c, s.theme.glyph(), .{ .size = 19, .weight = .medium, .color = s.theme.hue(c.theme.dark) orelse p.sub, .frame = 22 });
         s.rebuild();
+        if (s.scopeOf()) |sc| s.chip(c, p, sc);
         const r = ui.textField(c, &s.query, .{
             .suggestion = s.completion(),
             .bare = true,
             .size = s.theme.fieldSize(),
             .width = .fill,
-            .placeholder = "Search apps, do math, ask Grok…",
+            .placeholder = s.placeholder(),
             .placeholder_color = p.sub.alpha(0.75),
             .color = p.text,
         });
@@ -304,6 +354,14 @@ pub const Nanolight = struct {
         const q = s.query.text();
         if (q.len == 0 or s.res.n == 0 or std.hash.Wyhash.hash(0, q) == s.revealed) return "";
         const r = s.res.rows[0];
+        // Inside an app: the rest of the first person's name.
+        if (s.scope != null) {
+            if (r.kind != .into) return "";
+            const it = &s.into_list.items[r.into];
+            const name = it.title();
+            if (!it.person or name.len <= q.len or !text.utf8StartsWithFold(name, q)) return "";
+            return name[q.len..];
+        }
         if (r.kind == .app) {
             const name = s.index.apps.items[r.app].name;
             if (name.len <= q.len or !text.utf8StartsWithFold(name, q)) return "";
@@ -331,9 +389,21 @@ pub const Nanolight = struct {
     /// Rebuild changed queries, asking for missing completions.
     pub fn rebuild(s: *Nanolight) void {
         const q = s.query.text();
-        const h = std.hash.Wyhash.hash(0, q);
+        // The same words inside an app and out of it are two lists.
+        const h = std.hash.Wyhash.hash(if (s.scope) |a| @as(u64, a) + 1 else 0, q);
         if (h == s.built) return;
         s.built = h;
+        // Inside an app: its own rows, and nothing asked of the web.
+        if (s.scope != null) {
+            s.found.deinit();
+            s.web.n = 0;
+            s.fx = null;
+            s.fx_pending = false;
+            s.fx_failed = false;
+            s.fill();
+            s.sel = 0;
+            return;
+        }
         // The clipboard's history stays here: no files, rates or Google.
         if (clipboard.words(q) != null) {
             s.found.deinit();
@@ -376,6 +446,11 @@ pub const Nanolight = struct {
 
     pub fn fill(s: *Nanolight) void {
         s.list_gen +%= 1;
+        if (s.scopeOf()) |sc| {
+            into.build(&s.into_list, sc, s.query.text(), s.book, s.contacts_access, s.can_type);
+            s.res.intoRows(s.into_list.n, sc.name);
+            return;
+        }
         if (clipboard.words(s.query.text())) |w| {
             var found: [results.max_rows]u32 = undefined;
             const n = if (s.clips) |h| h.find(w, &found) else 0;
@@ -387,6 +462,7 @@ pub const Nanolight = struct {
         var web: [suggest.max_rows][]const u8 = undefined;
         s.res.claude = s.claude_on;
         s.res.build(s.query.text(), s.index, sug[0..ns], s.web.slices(&web), &s.found);
+        s.typedInto();
         if (s.res.n > 0 and s.res.rows[0].kind == .currency) {
             if (s.fx) |a| {
                 s.res.answer = @import("currency.zig").format(&s.res.answer_buf, a.value, true);
@@ -497,6 +573,15 @@ pub const Nanolight = struct {
                 ui.text(c, "System Settings", .{ .size = 12, .color = p.sub.alpha(0.8) });
             },
             .file => files_view.row(s, c, p, i, r),
+            .into => {
+                const it = &s.into_list.items[r.into];
+                if (it.person) {
+                    var m = r;
+                    m.match = it.match;
+                    ui.richText(c, it.title(), s.highlight(i, m, p), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82), .truncate = .ellipsis });
+                } else ui.text(c, it.title(), .{ .size = 13.5, .weight = .medium, .color = p.text, .truncate = .ellipsis });
+                ui.text(c, it.sub(), .{ .size = 12, .color = p.sub.alpha(0.8), .truncate = .ellipsis });
+            },
             .clip => if (s.clips) |h| if (h.get(r.clip)) |e| {
                 ui.text(c, clipboard.oneLine(&s.clip_lines[i], e.text), .{ .size = 13.5, .weight = .medium, .color = p.text.alpha(0.82), .truncate = .ellipsis });
                 ui.text(c, clipboard.ago(&s.clip_ago[i], e.at, s.clock()), .{ .size = 12, .color = p.sub.alpha(0.8) });
@@ -527,7 +612,7 @@ pub const Nanolight = struct {
         }
         ui.spacer(c);
         if (i == s.sel) {
-            ui.text(c, if (r.kind == .clip) "Copy" else if (r.kind == .app or r.kind == .file or r.kind == .settings or r.kind == .pane) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
+            ui.text(c, if (r.kind == .into) s.into_list.items[r.into].verb else if (r.kind == .clip) "Copy" else if (r.kind == .app or r.kind == .file or r.kind == .settings or r.kind == .pane) "Open" else "Go", .{ .size = 12, .weight = .medium, .color = p.sub });
             ui.kbd(c, "↩");
         } else if (i < 9) ui.textf(c, .{ .size = 12, .weight = .medium, .color = p.sub.alpha(0.5), .tabular = true }, "{s}{d}", .{ results.mod, i + 1 });
     }
@@ -539,7 +624,16 @@ pub const Nanolight = struct {
     /// The row's picture: the app's icon, or a symbol on a quiet tile.
     fn tile(s: *Nanolight, c: *ui.Context, p: Palette, r: Row) void {
         // A pane: System Settings' own icon.
-        const app = if (r.kind == .pane) s.index.find("System Settings") else if (r.kind == .app) r.app else null;
+        if (r.kind == .into) {
+            const it = &s.into_list.items[r.into];
+            if (it.person) {
+                const box = ui.div(c).size(26, 26).roundedFull().bg(p.tile).center();
+                defer box.end();
+                ui.text(c, it.initials(&s.into_initials[r.into]), .{ .size = 11, .weight = .semibold, .color = p.text });
+                return;
+            }
+        }
+        const app = if (r.kind == .pane) s.index.find("System Settings") else if (r.kind == .app) r.app else if (r.kind == .into and s.into_list.items[r.into].symbol.len == 0) s.into_list.items[r.into].app else null;
         if (app) |a| if (s.index.icon(a)) |png| {
             const box = ui.div(c).size(26, 26).center();
             defer box.end();
@@ -564,6 +658,7 @@ pub const Nanolight = struct {
             .suggest => "magnifyingglass",
             .settings => "gearshape",
             .clip => "doc.on.clipboard",
+            .into => s.into_list.items[r.into].symbol,
             else => "app.dashed",
         }, .{ .size = if (big) 16 else 13, .weight = .medium, .color = p.text });
     }
@@ -616,7 +711,8 @@ pub const Nanolight = struct {
             return;
         }
         if (s.res.n == 0) return;
-        ui.text(c, s.res.rows[@min(s.sel, s.res.n - 1)].kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
+        const sel_row = s.res.rows[@min(s.sel, s.res.n - 1)];
+        ui.text(c, if (sel_row.kind == .into) s.into_list.items[sel_row.into].verb else sel_row.kind.action(), .{ .size = 12, .weight = .medium, .color = p.text.alpha(0.85) });
         ui.kbd(c, "↩");
         ui.div(c).w(1).h(14).bg(p.hair).end();
         ui.text(c, "Close", .{ .size = 12, .color = p.sub.alpha(0.8) });
@@ -647,6 +743,7 @@ pub const Nanolight = struct {
                 s.go(s.index.apps.items[r.app].path);
             },
             .file => s.go(s.found.entries[r.file].path()),
+            .into => s.runInto(r.into),
             .ask_grok, .ask_claude, .search_x => s.go(results.url(&s.url_buf, r.kind, s.query.text())),
             .search_web => s.search(s.query.text(), !s.searches_out),
             .settings => s.openSettings(),
@@ -689,6 +786,159 @@ pub const Nanolight = struct {
         s.previewing = true;
         s.preview_q = std.hash.Wyhash.hash(0, s.query.text());
         show(h.ctx, u);
+    }
+
+    // ----- into an app (into.zig) -----
+
+    pub fn scopeOf(s: *const Nanolight) ?into.Scope {
+        const a = s.scope orelse return null;
+        if (a >= s.index.apps.items.len) return null;
+        const name = s.index.apps.items[a].name;
+        return .{ .app = a, .name = name, .handler = into.Handler.of(name) };
+    }
+
+    /// An app Tab can go into: a real one (not a command among the apps).
+    fn canEnter(s: *const Nanolight, a: u32) bool {
+        return a < s.index.apps.items.len and std.mem.endsWith(u8, s.index.apps.items[a].path, ".app");
+    }
+
+    /// What Tab would go into, from the selected row: an app, or the app
+    /// a row typed in full is for, with the words after its name.
+    fn intoTarget(s: *const Nanolight) ?struct { app: u32, rest: []const u8 } {
+        if (s.scope != null or s.sel >= s.res.n) return null;
+        const r = s.res.rows[s.sel];
+        if (r.kind == .app and s.canEnter(r.app)) return .{ .app = r.app, .rest = "" };
+        if (r.kind == .into) if (into.parseInline(s.query.text(), s.index)) |m| return .{ .app = m.app, .rest = m.rest };
+        return null;
+    }
+
+    /// Into app `a`, the field holding `rest`.
+    pub fn enter(s: *Nanolight, a: u32, rest: []const u8) void {
+        if (!s.canEnter(a)) return;
+        // `rest` may be the field's own text.
+        var buf: [256]u8 = undefined;
+        const n = @min(rest.len, buf.len);
+        @memcpy(buf[0..n], rest[0..n]);
+        s.back();
+        s.scope = a;
+        s.query.set(buf[0..n]);
+        s.query.want_selection = .{ n, n };
+        s.revealed = 0;
+        const sc = s.scopeOf().?;
+        if (sc.handler.warms()) if (s.host) |h| if (h.warm) |f| f(h.ctx, s.index.apps.items[a].path);
+        s.rebuild();
+    }
+
+    /// Out of the app: the field holds its name again (`restore`), as
+    /// before Tab, or nothing.
+    pub fn leave(s: *Nanolight, restore: bool) void {
+        const a = s.scope orelse return;
+        s.scope = null;
+        if (restore and a < s.index.apps.items.len) {
+            const name = s.index.apps.items[a].name;
+            s.query.set(name);
+            s.query.want_selection = .{ name.len, name.len };
+        } else s.query.clear();
+        s.revealed = std.hash.Wyhash.hash(0, s.query.text());
+        s.rebuild();
+    }
+
+    /// Contacts access changed, or the people in it did: the rows again.
+    pub fn contactsChanged(s: *Nanolight, book: ?*const contacts.Book, access: into.Access) void {
+        s.book = book;
+        s.contacts_access = access;
+        s.built = 1;
+        s.rebuild();
+    }
+
+    /// "messages to shawn", "text shawn", "safari apple.com": the app's
+    /// rows among the others. A person, an address or a pane named by the
+    /// app's whole name (or a verb for it) leads; the app's own search
+    /// for the words comes after the apps otherwise.
+    fn typedInto(s: *Nanolight) void {
+        s.into_list.n = 0;
+        if (s.res.n == 0 or s.res.rows[0].kind == .calc or s.res.rows[0].kind == .currency) return;
+        const m = into.parseInline(s.query.text(), s.index) orelse return;
+        if (!s.canEnter(m.app)) return;
+        const name = s.index.apps.items[m.app].name;
+        into.build(&s.into_list, .{ .app = m.app, .name = name, .handler = m.handler }, m.rest, s.book, s.contacts_access, s.can_type);
+        var lead: usize = 0;
+        // A browser, Maps or System Settings named by a word of it
+        // ("chrome", "settings") is as sure: its rows are addresses.
+        const sure = m.sure or m.handler == .browser or m.handler == .maps or m.handler == .settings;
+        if (sure) for (s.into_list.slice()) |it| {
+            const precise = switch (it.go) {
+                .url, .url_in_app => true,
+                .ask_contacts => m.person,
+                .search_in_app, .open_app => false,
+            };
+            if (!precise or lead == 3) break;
+            lead += 1;
+        };
+        if (lead > 0) {
+            s.into_list.n = lead;
+            s.res.insertInto(0, lead, name);
+            return;
+        }
+        // Its own search, under the apps, before Google's.
+        const own = for (s.into_list.slice(), 0..) |it, i| {
+            if (it.go == .search_in_app or it.go == .url_in_app) break i;
+        } else return;
+        s.into_list.items[0] = s.into_list.items[own];
+        s.into_list.n = 1;
+        const at = for (s.res.slice(), 0..) |r, i| {
+            if (r.kind == .search_web) break i;
+        } else s.res.n;
+        // Never the first row: with no app listed, Return still searches
+        // Google for what was typed, as it always did, and the row goes
+        // under Google's section, not into it.
+        const after_google = if (at == 0) for (s.res.slice(), 0..) |r, i| {
+            if (r.kind != .search_web and r.kind != .suggest) break i;
+        } else s.res.n else at;
+        s.res.insertInto(after_google, 1, name);
+    }
+
+    fn runInto(s: *Nanolight, k: u8) void {
+        const h = s.host orelse return;
+        const it = &s.into_list.items[k];
+        if (it.go == .ask_contacts) {
+            if (h.contacts) |f| f(h.ctx);
+            return;
+        }
+        s.index.opened(it.app, s.kv);
+        const path = s.index.apps.items[it.app].path;
+        if (h.into) |f| f(h.ctx, it, path) else h.open(h.ctx, switch (it.go) {
+            .url, .url_in_app => it.target(),
+            else => path,
+        });
+        // Done in it: the next showing starts outside, empty.
+        if (s.scope != null) s.leave(false);
+        h.hide(h.ctx);
+    }
+
+    /// The app the field is in, before it: its icon and name.
+    fn chip(s: *Nanolight, c: *ui.Context, p: Palette, sc: into.Scope) void {
+        ui.key(c, "into-chip");
+        const d = ui.div(c).row().h(28).px(8).gap(6).rounded(8).bg(p.tile).itemsCenter().control();
+        defer d.end();
+        if (d.clicked()) s.leave(true);
+        if (s.index.icon(sc.app)) |png| {
+            _ = ui.image(c, .{ .key = s.index.apps.items[sc.app].path, .bytes = png, .max_width = 18, .max_height = 18, .radius = 0, .scale = 1 });
+        }
+        ui.text(c, sc.name, .{ .size = 13.5, .weight = .semibold, .color = p.text });
+    }
+
+    fn placeholder(s: *Nanolight) []const u8 {
+        const sc = s.scopeOf() orelse return "Search apps, do math, ask Grok…";
+        return switch (sc.handler) {
+            .messages => "Someone, or someone and what to say",
+            .mail => "Someone, or an email address",
+            .facetime => "Who to call",
+            .browser => "An address, or what to search",
+            .maps => "A place or an address",
+            .settings => "A setting",
+            .generic => std.fmt.bufPrint(&s.placeholder_buf, "Search {s}…", .{sc.name}) catch "Search…",
+        };
     }
 
     pub fn openSettings(s: *Nanolight) void {

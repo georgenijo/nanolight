@@ -40,7 +40,12 @@ chmod -R u+w "$bundle"
 
 sign() {
   if [ -n "${CODESIGN_IDENTITY:-}" ]; then
-    codesign --force --timestamp --options runtime --sign "$CODESIGN_IDENTITY" "$1"
+    # The app gets its entitlements (Contacts, under the hardened runtime);
+    # the disk image and anything else signed, none.
+    case "$1" in
+      *.app) codesign --force --timestamp --options runtime --entitlements macos/Nanolight.entitlements --sign "$CODESIGN_IDENTITY" "$1" ;;
+      *) codesign --force --timestamp --options runtime --sign "$CODESIGN_IDENTITY" "$1" ;;
+    esac
   else
     codesign --force --sign - "$1"
   fi

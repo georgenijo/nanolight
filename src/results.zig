@@ -37,6 +37,8 @@ pub const Kind = enum {
     pane,
     /// Something copied before (`Row.clip`, its place in the history).
     clip,
+    /// What an app does with the query, inside it (into.zig; `Row.into`).
+    into,
 
     /// The row's kind as its trailing label shows it.
     pub fn label(k: Kind) []const u8 {
@@ -48,6 +50,7 @@ pub const Kind = enum {
             .settings => "Nanolight",
             .pane => "System Settings",
             .clip => "Clipboard",
+            .into => "Action",
             .ask_grok, .ask_claude, .search_x, .search_web, .suggest => "Web",
         };
     }
@@ -62,6 +65,7 @@ pub const Kind = enum {
             .settings => "Open Settings",
             .pane => "Open in System Settings",
             .clip => "Copy",
+            .into => "Go",
             .ask_grok => "Ask Grok",
             .ask_claude => "Ask Claude",
             .search_x => "Search X",
@@ -77,6 +81,7 @@ pub const Kind = enum {
             .settings => "Nanolight",
             .pane => "System Settings",
             .clip => "Clipboard History",
+            .into => "",
             .search_web, .suggest => "Google",
             .ask_grok, .ask_claude, .search_x => "Ask & Search",
         };
@@ -92,6 +97,8 @@ pub const Row = struct {
     web: u8 = 0,
     /// Which entry of the clipboard's history (`.clip`), by its id.
     clip: u32 = 0,
+    /// Which of the app's actions (`.into`).
+    into: u8 = 0,
     /// Which of its name's bytes the query matched.
     match: search.Match = .{ .score = 0 },
 };
@@ -118,6 +125,8 @@ pub const Results = struct {
     /// A whole answer in hexadecimal too ("0xC00"), else empty.
     hex_buf: [24]u8 = undefined,
     hex: []const u8 = "",
+    /// The app the `.into` rows are for, as their section says it.
+    into_name: []const u8 = "",
 
     pub fn slice(r: *const Results) []const Row {
         return r.rows[0..r.n];
@@ -212,6 +221,42 @@ pub const Results = struct {
         return false;
     }
 
+    /// Inside an app: its actions alone, under its name.
+    pub fn intoRows(r: *Results, n: usize, name: []const u8) void {
+        r.n = 0;
+        r.suggested = false;
+        r.into_name = name;
+        for (0..@min(n, max_rows)) |i| r.push(.{ .kind = .into, .into = @intCast(i) });
+    }
+
+    /// `n` of an app's actions, typed in full ("messages to shawn"), at
+    /// `at`; what they push past the end is let go, Google's completions
+    /// first.
+    pub fn insertInto(r: *Results, at_in: usize, n: usize, name: []const u8) void {
+        r.into_name = name;
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            if (r.n == max_rows) {
+                // A completion goes, else the last row.
+                var drop: usize = r.n - 1;
+                var j: usize = r.n;
+                while (j > 0) {
+                    j -= 1;
+                    if (r.rows[j].kind == .suggest) {
+                        drop = j;
+                        break;
+                    }
+                }
+                std.mem.copyForwards(Row, r.rows[drop .. r.n - 1], r.rows[drop + 1 .. r.n]);
+                r.n -= 1;
+            }
+            const at = @min(at_in + k, r.n);
+            std.mem.copyBackwards(Row, r.rows[at + 1 .. r.n + 1], r.rows[at..r.n]);
+            r.rows[at] = .{ .kind = .into, .into = @intCast(k) };
+            r.n += 1;
+        }
+    }
+
     fn push(r: *Results, row: Row) void {
         if (r.n == max_rows) return;
         r.rows[r.n] = row;
@@ -221,8 +266,11 @@ pub const Results = struct {
     /// The header above row `i`, if a section starts there.
     pub fn section(r: *const Results, i: usize) ?[]const u8 {
         const k = r.rows[i].kind;
-        const name = k.section(r.suggested);
-        if (i > 0 and std.mem.eql(u8, r.rows[i - 1].kind.section(r.suggested), name)) return null;
+        const name = if (k == .into) r.into_name else k.section(r.suggested);
+        if (i > 0) {
+            const before = r.rows[i - 1].kind;
+            if (std.mem.eql(u8, if (before == .into) r.into_name else before.section(r.suggested), name)) return null;
+        }
         return name;
     }
 };
@@ -234,7 +282,7 @@ pub fn url(buf: []u8, kind: Kind, query: []const u8) []const u8 {
         .ask_claude => "https://claude.ai/new?q=",
         .search_x => "https://x.com/search?f=live&q=",
         .search_web, .suggest => "https://www.google.com/search?q=",
-        .calc, .currency, .app, .file, .settings, .pane, .clip => return "",
+        .calc, .currency, .app, .file, .settings, .pane, .clip, .into => return "",
     };
     var w: std.Io.Writer = .fixed(buf);
     w.writeAll(base) catch return "";

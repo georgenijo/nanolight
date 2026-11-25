@@ -112,6 +112,8 @@ pub const Live = struct {
             .into = if (mac) into_mac.run else null,
             .warm = if (mac) into_mac.warm else null,
             .contacts = if (mac) into_mac.ask else null,
+            .run = rc.runCommand,
+            .terminal = if (mac) rc.terminal else null,
         };
     }
 

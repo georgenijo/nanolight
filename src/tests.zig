@@ -31,6 +31,7 @@ test {
     _ = @import("clipboard.zig");
     _ = @import("contacts.zig");
     _ = @import("into.zig");
+    _ = @import("shell_cmd.zig");
     _ = @import("tests_panel.zig");
     switch (@import("builtin").os.tag) {
         .macos => {
@@ -970,4 +971,108 @@ test "typed in full, \"messages to shawn\" leads with Shawn, no Tab needed" {
     tt.settle(1);
     try t.expectEqual(ix.find("Notes"), s.scope);
     try t.expectEqualStrings("groceries", s.query.text());
+}
+
+/// A host that records the commands it was asked to run.
+const CmdProbe = struct {
+    probe: Probe = .{},
+    ran: [256]u8 = undefined,
+    ran_len: usize = 0,
+    runs: usize = 0,
+    in_terminal: usize = 0,
+
+    fn host(p: *CmdProbe) view.Host {
+        return .{ .ctx = p, .open = open, .hide = hide, .run = run, .terminal = terminal };
+    }
+    fn open(ctx: *anyopaque, target: []const u8) void {
+        const p: *CmdProbe = @ptrCast(@alignCast(ctx));
+        Probe.open(&p.probe, target);
+    }
+    fn hide(ctx: *anyopaque) void {
+        const p: *CmdProbe = @ptrCast(@alignCast(ctx));
+        p.probe.hidden = true;
+    }
+    fn keep(p: *CmdProbe, cmd: []const u8) void {
+        @memcpy(p.ran[0..cmd.len], cmd);
+        p.ran_len = cmd.len;
+    }
+    fn run(ctx: *anyopaque, cmd: []const u8) void {
+        const p: *CmdProbe = @ptrCast(@alignCast(ctx));
+        p.keep(cmd);
+        p.runs += 1;
+    }
+    fn terminal(ctx: *anyopaque, cmd: []const u8) void {
+        const p: *CmdProbe = @ptrCast(@alignCast(ctx));
+        p.keep(cmd);
+        p.in_terminal += 1;
+    }
+};
+
+test "> runs a command: one row, nothing sent anywhere, ↑ brings it back" {
+    const t = std.testing;
+    const gpa = t.allocator;
+    var ix: Index = .init(gpa);
+    defer ix.deinit();
+    ix.starters = &mac_starters;
+    try ix.add("Terminal", "/System/Applications/Utilities/Terminal.app");
+    var probe: CmdProbe = .{};
+    var s: view.Nanolight = .{ .index = &ix };
+    defer s.query.deinit();
+    s.host = probe.host();
+    s.reveal();
+    var tt: ui.Tester = undefined;
+    try tt.init(gpa, .init(&s, view.Nanolight.view), .{ .width = view.width, .height = view.max_height, .dark = true });
+    defer tt.deinit();
+    tt.settle(1);
+
+    // ">" alone: no rows yet, a hint; nothing runs on Return.
+    press(&tt, &.{.{ .insert = ">" }});
+    try t.expectEqual(@as(usize, 0), s.res.n);
+    try t.expect(tt.hasText("Type a command: Return runs it here"));
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(@as(usize, 0), probe.runs);
+
+    // The command: its one row, no Google, no files, no completions.
+    press(&tt, &.{.{ .insert = " git status" }});
+    try t.expectEqual(@as(usize, 1), s.res.n);
+    try t.expectEqual(results.Kind.command, s.res.rows[0].kind);
+    try t.expectEqual(@as(usize, 0), s.web.n);
+    try t.expectEqual(@as(usize, 0), probe.probe.opened_len);
+    try t.expect(tt.hasText("git status"));
+    try t.expect(tt.hasText("Runs in your shell, here · ⌘↩ in Terminal"));
+    try t.expect(tt.hasText("Shell"));
+    press(&tt, &.{.{ .command = .insert_newline }});
+    try t.expectEqual(@as(usize, 1), probe.runs);
+    try t.expectEqualStrings("git status", probe.ran[0..probe.ran_len]);
+    // It runs in the panel, which stays up, the command still typed.
+    try t.expect(!probe.probe.hidden);
+    try t.expectEqualStrings("> git status", s.query.text());
+
+    // "cmd " too; ⌘↩ sends it to Terminal, and the panel goes.
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "cmd ls -la" } });
+    try t.expectEqual(results.Kind.command, s.res.rows[0].kind);
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.enter, .cmd = true }));
+    tt.settle(1);
+    try t.expectEqual(@as(usize, 1), probe.in_terminal);
+    try t.expectEqualStrings("ls -la", probe.ran[0..probe.ran_len]);
+    try t.expect(probe.probe.hidden);
+
+    // ↑ goes back through them, newest first; ↓ comes back to an empty one.
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = ">" } });
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.up }));
+    tt.settle(1);
+    try t.expectEqualStrings("> ls -la", s.query.text());
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.up }));
+    tt.settle(1);
+    try t.expectEqualStrings("> git status", s.query.text());
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.down }));
+    tt.settle(1);
+    try t.expectEqualStrings("> ls -la", s.query.text());
+    try t.expect(tt.shortcut(.{ .key = ui.Shortcut.down }));
+    tt.settle(1);
+    try t.expectEqualStrings("> ", s.query.text());
+
+    // A word that only starts like it is a search as before.
+    press(&tt, &.{ .{ .command = .select_all }, .{ .command = .delete_backward }, .{ .insert = "terminal" } });
+    try t.expectEqual(results.Kind.app, s.res.rows[0].kind);
 }

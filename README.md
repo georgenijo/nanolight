@@ -14,6 +14,7 @@ Apps, math, Google, Grok, X and Raycast extensions: one keystroke away. Native Z
 - **System Settings panes** (Mac): "login items", "wifi" or "dark mode" lists the pane, under the apps, and Return opens System Settings right at it.
 - **Completes inline**: the rest of the top app's name, or of Google's top suggestion, is drawn faintly after the caret. → takes it (Tab too, for Google's); Return never does.
 - **Goes into apps** (Mac): Tab on an app's row puts the field inside it, its name in front of the caret, and what you type next is for that app. **Messages** finds people in Contacts and opens their conversation (`shawn running late` opens it with the words written, not sent), **Mail** writes to them, **FaceTime** calls them, a **browser** opens an address or a search in itself, **Maps** searches or gives directions, **System Settings** lists its panes, and **any other app** opens with what you typed in its own search. Typed in full, `messages to shawn`, `text shawn` or `safari apple.com` lists the same rows without Tab (a person, an address or a pane leads; otherwise the app's own search sits under the apps, and Return on a plain search still goes to Google). Delete in the empty field, ⇧Tab or Esc comes back out. It is all plain code on your Mac, so rows come with the key that typed them; Contacts stay in memory, are asked for only from a row, and are sent nowhere. Typing into another app's search needs Accessibility, which macOS asks for the first time; without it the words are put on the clipboard.
+- **Runs commands**: `> git status` (or `cmd git status`) is one row; Return runs it in your login shell from your home folder and shows its output in the panel as it prints, ⌘↩ opens it in Terminal instead. Esc stops it (and what it started) and brings the command back to edit; ↑ and ↓ go through the ones run before, kept only while Nanolight runs. Nothing runs while you type, and a command is never sent to Google. It has no keyboard: something that asks for input, such as `sudo`'s password, `ssh` or `vim`, belongs in Terminal (⌘↩).
 - **Does math**: `2^10 * 3` answers 3,072 (and `0xC00`). Return copies it.
 - **Converts currency**: `100 USD to EUR` (or `100usd in sgd`) uses [Frankfurter](https://www.frankfurter.app)'s ECB daily rates. Return copies the amount. Offline or a failed fetch shows that the rates are away — never a made-up number.
 - **Google suggestions**: up to four, under the apps, the words you add in bold. Nothing that reads as an address (a dot, a slash, an @) is sent.
@@ -81,6 +82,7 @@ cd raycast && npm test              # the Raycast extensions' host
 | `src/view.zig` | The panel: query, rows, footer, keys |
 | `src/results.zig` | What a query lists, in order |
 | `src/into.zig` | Inside an app: what each app lists for what is typed |
+| `src/shell_cmd.zig` | A command typed after `>`: what it is, and how the shell and Terminal get it |
 | `src/into_mac.zig` | Contacts, and an app's search typed through Accessibility |
 | `src/search.zig` | Fuzzy matching and ranking, allocation-free |
 | `src/calc.zig` | The calculator |

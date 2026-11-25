@@ -311,6 +311,7 @@ extern "c" fn AXUIElementSetAttributeValue(el: AXUIElementRef, attr: objc.Object
 extern "c" fn AXUIElementSetMessagingTimeout(el: AXUIElementRef, seconds: f32) i32;
 extern "c" fn CFRelease(cf: *anyopaque) void;
 extern "c" fn CFRetain(cf: *anyopaque) *anyopaque;
+extern "c" fn CFEqual(a: *anyopaque, b: *anyopaque) bool;
 extern "c" var kCFBooleanTrue: CFTypeRef;
 extern "c" fn CGEventCreateKeyboardEvent(source: ?*anyopaque, key: u16, down: bool) ?*anyopaque;
 extern "c" fn CGEventKeyboardSetUnicodeString(ev: *anyopaque, len: c_ulong, chars: [*]const u16) void;
@@ -358,9 +359,13 @@ fn containsFold(hay: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn isTextInput(el: AXUIElementRef) bool {
-    inline for (.{ "AXTextField", "AXTextArea", "AXSearchField", "AXComboBox" }) |r| if (attrHas(el, "AXRole", r, false)) return true;
-    return attrHas(el, "AXSubrole", "AXSearchField", false);
+/// A one-line field: a search field, a text field or a combo box, never
+/// a text area (a document, a message).
+fn isSearchLike(el: AXUIElementRef) bool {
+    if (attrHas(el, "AXRole", "AXTextArea", false)) return false;
+    if (attrHas(el, "AXSubrole", "AXSearchField", false)) return true;
+    inline for (.{ "AXTextField", "AXSearchField", "AXComboBox" }) |r| if (attrHas(el, "AXRole", r, false)) return true;
+    return false;
 }
 
 fn isSearch(el: AXUIElementRef) bool {
@@ -472,18 +477,33 @@ const Job = struct {
         if (waited > 300) ms(120);
         const app = AXUIElementCreateApplication(pid);
         defer CFRelease(app);
+        // The field to type into must be one Nanolight knows is a search:
+        // the one found, or what ⌘F moved the keys to. Never the field the
+        // keys were already in (a document's text, which ⌘A would select
+        // and the words replace), and never a text area.
+        const before = attr(app, "AXFocusedUIElement");
+        defer if (before) |b| CFRelease(b);
+        var target: ?CFTypeRef = null;
         if (findSearch(@ptrCast(win))) |field| {
-            defer CFRelease(field);
             _ = AXUIElementSetAttributeValue(field, objc.nsString("AXFocused"), kCFBooleanTrue);
             ms(40);
+            target = @ptrCast(field);
         } else {
             press(pid, key_f, cmd_flag);
             ms(160);
+            const after = attr(app, "AXFocusedUIElement") orelse return copy(text);
+            const moved = if (before) |b| !CFEqual(b, after) else true;
+            if (!moved or !isSearchLike(@ptrCast(after))) {
+                CFRelease(after);
+                return copy(text);
+            }
+            target = after;
         }
-        // Only into a field: keys anywhere else could be the app's shortcuts.
+        defer CFRelease(target.?);
+        // The keys must be in that field now, and nowhere else.
         const f = attr(app, "AXFocusedUIElement") orelse return copy(text);
         defer CFRelease(f);
-        if (!isTextInput(@ptrCast(f))) return copy(text);
+        if (!CFEqual(f, target.?) or !isSearchLike(@ptrCast(f))) return copy(text);
         // What the search held before gives way to the words.
         press(pid, key_a, cmd_flag);
         typeText(pid, text);

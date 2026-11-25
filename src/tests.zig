@@ -847,7 +847,7 @@ test "Tab goes into an app; typing lists what it does; Return does it" {
     s.can_type = false;
     s.built = 1;
     tt.settle(1);
-    try t.expectEqualStrings("Copies it for ⌘V · allow Nanolight in Accessibility to type it", s.into_list.items[0].sub());
+    try t.expectEqualStrings("Copies it for ⌘V (Accessibility is off)", s.into_list.items[0].sub());
     s.can_type = true;
     s.built = 1;
     tt.settle(1);

@@ -180,7 +180,7 @@ pub fn build(l: *List, sc: Scope, query_in: []const u8, book: ?*const Book, acce
         if (can_type)
             it.setSub("Types it into {s}'s search", .{sc.name})
         else
-            it.setSub("Copies it for ⌘V · allow Nanolight in Accessibility to type it", .{});
+            it.setSub("Copies it for ⌘V (Accessibility is off)", .{});
         it.setTarget("{s}", .{q});
         it.symbol = "magnifyingglass";
     };

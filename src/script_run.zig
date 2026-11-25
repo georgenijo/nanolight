@@ -139,7 +139,7 @@ pub const Runner = struct {
         r.out.clearRetainingCapacity();
         const a = r.arena.?.allocator();
         var cmd_buf: [8][]const u8 = undefined;
-        var sh_buf: [4][]const u8 = undefined;
+        var sh_buf: [5][]const u8 = undefined;
         const cmd = if (r.shell) |line|
             (if (windows) blk: {
                 sh_buf[0..3].* = .{ "cmd.exe", "/c", line };
